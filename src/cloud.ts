@@ -39,17 +39,19 @@ export function createGameCloud(ownerId: string, gameId: string, onFailure: (mes
   // Ordered writes: session creation precedes answers; answers precede finalization.
   const append = (job: () => Promise<void>) => {
     chain = chain.catch(() => undefined).then(async () => {
-      try { await job(); } catch (err) { onFailure(err instanceof Error ? err.message : String(err)); }
+      try { await job(); } catch (err) { onFailure(err && typeof err === 'object' && 'message' in err ? String(err.message) : String(err)); }
     });
   };
   let lastSnapshot = '';
+  const pendingSnapshots = new Set<string>();
   const api: GameCloud & { flush: () => Promise<void> } = {
     flush: () => chain,
     onProfilesChanged(profiles) {
       const current = JSON.stringify(profiles);
-      if (current === lastSnapshot) return;
-      lastSnapshot = current;
+      if (current === lastSnapshot || pendingSnapshots.has(current)) return;
+      pendingSnapshots.add(current);
       append(async () => {
+        try {
         const { data: currentRows, error: listError } = await supabase.from('student_profiles').select('id').eq('owner_id', ownerId);
         if (listError) throw listError;
         for (const p of profiles) {
@@ -70,6 +72,8 @@ export function createGameCloud(ownerId: string, gameId: string, onFailure: (mes
             if (error) throw error;
           }
         }
+        lastSnapshot = current;
+        } finally { pendingSnapshots.delete(current); }
       });
     },
     onModuleEvent(studentId,eventKind,payload) {
