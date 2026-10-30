@@ -22,7 +22,7 @@ function fixture(initial=[base]) {
     if(fail){fail=false;return {error:{message:'Temporary failure'}}}
     if(name==='delete_student_profile'){rows.delete(data.p_student_id);return {error:null}}
     const previous=rows.get(data.p_student_id);
-    if((previous?.revision??null)!==data.p_expected_revision)return {error:{code:'40001',message:'conflict'}};
+    if((previous?.revision??null)!==data.p_expected_revision)return {error:{code:'PT409',message:'conflict'}};
     const revision=(previous?.revision||0)+1;rows.set(data.p_student_id,{revision,snapshot:data.p_snapshot});return {data:revision,error:null};
   }};
   const source=read('src/cloud.ts').replace(/import\.meta\.env\.VITE_SUPABASE_URL/g,"'https://example.invalid'").replace(/import\.meta\.env\.VITE_SUPABASE_PUBLISHABLE_KEY/g,"'public-test'");
@@ -90,6 +90,11 @@ await test('authentication consumes lazy touch_login RPC, and a logging failure 
       {window:{location:{hash:''}},console:{warn:()=>{}}});
     gate.default();await reload();assert.equal(consumed,1);assert(modes.includes('approved'));assert(!modes.includes('error'));
   }
+});
+await test('real Supabase client exposes a 409 conflict without retrying it',async()=>{
+ let requests=0;const {createClient}=require('@supabase/supabase-js');
+ const client=createClient('https://example.invalid','public-test',{auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false},global:{fetch:async()=>{requests++;return new Response(JSON.stringify({code:'PT409',message:'Progress changed'}),{status:409,headers:{'Content-Type':'application/json'}})}}});
+ const {error}=await client.rpc('save_game_profile',{});assert.equal(error.code,'PT409');assert.equal(requests,1);
 });
 console.log(JSON.stringify({environment:'isolated synchronization, navigation, authentication and pagination regressions',results},null,2));
 if(results.some(r=>r.result==='FAIL'))process.exitCode=1;

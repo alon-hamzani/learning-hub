@@ -62,7 +62,7 @@ await db.exec(`insert into game_sessions(id,owner_id,student_id,world_id,mode,qu
 await check('cannot finalize another owner session',()=>as(a,()=>denied(()=>db.query(`select finalize_game('qa-owner-check')`))));
 await check('revocation blocks unfinished session finalization',()=>as(a,async()=>{await db.exec(`insert into game_sessions(id,owner_id,student_id,world_id,mode,question_count) values('qa-revoked','${a}','qa-child-a',2,'practice',1);reset role;delete from user_game_permissions where user_id='${a}';set local role authenticated;`);await denied(()=>db.query(`select finalize_game('qa-revoked')`))}));
 await check('question counts constrained',()=>as(a,()=>denied(()=>db.exec(`insert into game_sessions(id,owner_id,student_id,world_id,mode,question_count) values('qa-count','${a}','qa-child-a',2,'practice',0)`))));
-for(const name of ['20261030_sync_safety.sql','20261030_admin_summary.sql']) await check('migration '+name,()=>db.exec(readFileSync(new URL('../supabase/migrations/'+name,import.meta.url),'utf8')));
+for(const name of ['20261030_sync_safety.sql','20261030_admin_summary.sql','20261030_sync_conflict_response.sql']) await check('migration '+name,()=>db.exec(readFileSync(new URL('../supabase/migrations/'+name,import.meta.url),'utf8')));
 await db.exec(`insert into user_game_permissions(user_id,game_id) values('${a}','multiplication-quest') on conflict do nothing`);
 const snapshot={id:'qa-child-a',name:'QA A',avatar:'🦊',xp:10};
 const save=(profile,revision)=>db.query('select save_game_profile($1,$2,$3,$4) revision',[profile.id,'multiplication-quest',profile,revision]);
@@ -73,7 +73,7 @@ await check('atomic save updates revision and profile together',()=>as(a,async()
 await check('stale device update rejected without overwriting latest',()=>as(a,async()=>{
  await save({...snapshot,xp:20},1);
  await db.exec('savepoint stale');
- await denied(()=>save({...snapshot,xp:1},1));
+ let conflict;try{await save({...snapshot,xp:1},1)}catch(error){conflict=error}assert(conflict?.code==='PT409','business conflict must map to HTTP 409');
  await db.exec('rollback to savepoint stale');
  assert((await db.query(`select snapshot->>'xp' xp from game_progress where student_id='qa-child-a'`)).rows[0].xp==='20','stale write won');
 }));
