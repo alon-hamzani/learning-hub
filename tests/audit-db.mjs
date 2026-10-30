@@ -1,0 +1,44 @@
+import { PGlite } from '@electric-sql/pglite';
+import {readFileSync} from 'node:fs';
+const db=new PGlite();
+const results=[];
+const check=async(name,fn)=>{try{await fn();results.push({name,result:'PASS'});}catch(e){results.push({name,result:'FAIL',detail:e.message});}};
+const assert=(x,m)=>{if(!x)throw Error(m)};
+await db.exec(`create role anon; create role authenticated; create schema auth;
+create table auth.users(id uuid primary key,email text,email_confirmed_at timestamptz,raw_app_meta_data jsonb,raw_user_meta_data jsonb);
+create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
+grant usage on schema auth to authenticated,anon; grant execute on function auth.uid() to authenticated,anon;`);
+for(const name of ['20261030_cloud.sql','20261030_learning_hub.sql','20261030_audit_fixes.sql']){
+ const sql=readFileSync(new URL('../supabase/migrations/'+name,import.meta.url),'utf8').replace('create extension if not exists pgcrypto;','');
+ await check('migration '+name,()=>db.exec(sql));
+}
+const admin='10000000-0000-4000-8000-000000000001',a='10000000-0000-4000-8000-000000000002',b='10000000-0000-4000-8000-000000000003',pending='10000000-0000-4000-8000-000000000004';
+for(const [id,email,confirmed] of [[admin,'alon.hamzani@gmail.com',true],[a,'qa-a@example.invalid',true],[b,'qa-b@example.invalid',true],[pending,'qa-pending@example.invalid',false]])await db.query(`insert into auth.users values($1,$2,$3,'{"provider":"google"}','{}')`,[id,email,confirmed?new Date().toISOString():null]);
+await check('admin bootstrap verified-at-insert',async()=>assert((await db.query(`select role,status from app_users where id=$1`,[admin])).rows[0].role==='super_admin','not admin'));
+await db.exec(`update app_users set status='approved' where id in ('${a}','${b}'); insert into user_game_permissions(user_id,game_id) values('${a}','multiplication-quest'),('${b}','multiplication-quest'); insert into student_profiles(id,owner_id,name) values('qa-child-a','${a}','QA A'),('qa-child-b','${b}','QA B');`);
+const as=async(id,fn)=>{await db.exec(`begin; set local role authenticated; select set_config('request.jwt.claim.sub','${id}',true);`);try{return await fn()}finally{await db.exec('rollback')}};
+const denied=async(fn)=>{let hit=false;try{await fn()}catch{hit=true}assert(hit,'unexpectedly allowed')};
+await check('pending sees no children',()=>as(pending,async()=>assert((await db.query('select id from student_profiles')).rows.length===0,'data exposed')));
+await check('approved sees only own children',()=>as(a,async()=>assert(JSON.stringify((await db.query('select id from student_profiles')).rows)==='[{"id":"qa-child-a"}]','wrong rows')));
+await check('ordinary cannot promote self',()=>as(a,()=>denied(()=>db.exec(`update app_users set role='super_admin' where id='${a}'`))));
+await check('ordinary cannot insert permissions',()=>as(a,()=>denied(()=>db.exec(`insert into user_game_permissions(user_id,game_id) values('${pending}','multiplication-quest')`))));
+await check('legacy snapshots hidden',()=>as(a,()=>denied(()=>db.query('select snapshot from student_profiles'))));
+await check('profile upsert used by app',()=>as(a,()=>db.exec(`insert into student_profiles(id,owner_id,name,avatar) values('qa-child-a','${a}','QA renamed','fox') on conflict(id) do update set owner_id=excluded.owner_id,name=excluded.name,avatar=excluded.avatar`)));
+await check('cannot create session for other owner child',()=>as(a,()=>denied(()=>db.exec(`insert into game_sessions(id,owner_id,student_id,world_id,mode,question_count) values('qa-foreign','${a}','qa-child-b',1,'practice',1)`))));
+await check('cannot create progress for other child',()=>as(a,()=>denied(()=>db.exec(`insert into game_progress(owner_id,student_id,game_id) values('${a}','qa-child-b','multiplication-quest')`))));
+await db.exec(`insert into game_progress(owner_id,student_id,game_id) values('${a}','qa-child-a','multiplication-quest');`);
+await check('cannot retarget existing progress to other child',()=>as(a,()=>denied(()=>db.query(`update game_progress set student_id='qa-child-b' where student_id='qa-child-a' returning student_id`))));
+await check('complete session produces server result',()=>as(a,async()=>{await db.exec(`insert into game_sessions(id,owner_id,student_id,world_id,mode,question_count) values('qa-complete','${a}','qa-child-a',2,'practice',1); insert into question_attempts(session_id,owner_id,student_id,question_uid,a,b,kind,action,response) values('qa-complete','${a}','qa-child-a','q1',2,6,'number','answer','12');`);const r=await db.query(`select finalize_game('qa-complete') result`);assert(r.rows[0].result.score===100,'wrong score');assert((await db.query(`select score from game_results where session_id='qa-complete'`)).rows[0].score===100,'no result')}));
+await check('incomplete session rejected',()=>as(a,async()=>{await db.exec(`insert into game_sessions(id,owner_id,student_id,world_id,mode,question_count) values('qa-incomplete','${a}','qa-child-a',2,'practice',2)`);await denied(()=>db.query(`select finalize_game('qa-incomplete')`))}));
+await check('numeric leading-zero answer matches browser acceptance',()=>as(a,async()=>{await db.exec(`insert into game_sessions(id,owner_id,student_id,world_id,mode,question_count) values('qa-zero','${a}','qa-child-a',2,'practice',1);insert into question_attempts(session_id,owner_id,student_id,question_uid,a,b,kind,action,response) values('qa-zero','${a}','qa-child-a','q1',2,6,'number','answer','012');`);assert((await db.query(`select correct from question_attempts where session_id='qa-zero'`)).rows[0].correct===true,'browser accepts 012 but database rejects it')}));
+await check('revoked game hidden',async()=>{await db.exec(`delete from user_game_permissions where user_id='${a}'`);await as(a,async()=>assert((await db.query('select * from games')).rows.length===0,'game still visible'))});
+await check('anon cannot read app users',async()=>{await db.exec('begin;set local role anon;');try{await denied(()=>db.query('select * from app_users'))}finally{await db.exec('rollback')}});
+await check('admin confirmation after signup',async()=>{
+ await db.exec(`delete from auth.users where id='${admin}'; insert into auth.users values('${admin}','alon.hamzani@gmail.com',null,'{"provider":"google"}','{}');`);
+ assert((await db.query(`select status from app_users where id='${admin}'`)).rows[0].status==='pending','expected initial pending');
+ await db.exec(`update auth.users set email_confirmed_at=now() where id='${admin}'`);
+ assert((await db.query(`select role,status from app_users where id='${admin}'`)).rows[0].role==='super_admin','confirmation did not promote');
+});
+console.log(JSON.stringify({environment:'isolated PGlite PostgreSQL; mock auth.uid; pgcrypto creation omitted (built-in UUID)',results},null,2));
+if(results.some(r=>r.result==='FAIL'))process.exitCode=1;
+await db.close();
