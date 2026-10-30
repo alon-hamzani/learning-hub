@@ -1,0 +1,9 @@
+# The deployed functions authenticate requests in code (Google user or server key).
+[functions.admin-action]
+verify_jwt = false
+[functions.admin-game-action]
+verify_jwt = false
+[functions.notify-approval]
+verify_jwt = false
+[functions.email-delivery-check]
+verify_jwt = false
