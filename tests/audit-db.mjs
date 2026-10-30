@@ -107,6 +107,21 @@ await check('touch_login records timestamp and throttles repeated events',()=>as
  assert((await db.query(`select count(*)::int n from activity_events where owner_id='${a}' and event_type='login'`)).rows[0].n===1,'duplicate login event');
 }));
 
+
+// Supabase's server role bypasses RLS, but still needs ordinary SQL privileges.
+await db.exec('alter role service_role bypassrls');
+const asServer=async fn=>{await db.exec('begin;set local role service_role;');try{return await fn()}finally{await db.exec('rollback')}};
+await check('old permission upsert reproduces missing UPDATE privilege',()=>asServer(()=>denied(()=>db.query(`insert into user_game_permissions(user_id,game_id,granted_by) values('${pending}','multiplication-quest','${admin}') on conflict(user_id,game_id) do update set granted_by=excluded.granted_by`))));
+await check('server can grant, repeat grant, and revoke using existing privileges',()=>asServer(async()=>{
+ const grant=`insert into user_game_permissions(user_id,game_id,granted_by) values('${pending}','multiplication-quest','${admin}') on conflict(user_id,game_id) do nothing`;
+ await db.query(grant);await db.query(grant);
+ const rows=(await db.query(`select * from user_game_permissions where user_id='${pending}'`)).rows;
+ assert(rows.length===1&&rows[0].granted_by===admin,'grant was not idempotent');
+ await db.query(`delete from user_game_permissions where user_id='${pending}'`);
+ assert((await db.query(`select * from user_game_permissions where user_id='${pending}'`)).rows.length===0,'revoke failed');
+ assert(!(await db.query(`select has_table_privilege('service_role','user_game_permissions','UPDATE') allowed`)).rows[0].allowed,'unexpected update privilege');
+}));
+
 console.log(JSON.stringify({environment:'isolated PostgreSQL second pass',results},null,2));
 if(results.some(r=>r.result==='FAIL'))process.exitCode=1;
 await db.close();

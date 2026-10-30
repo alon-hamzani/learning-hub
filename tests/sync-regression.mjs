@@ -100,5 +100,18 @@ await test('real Supabase client exposes a 409 conflict without retrying it',asy
  const client=createClient('https://example.invalid','public-test',{auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false},global:{fetch:async()=>{requests++;return new Response(JSON.stringify({code:'PT409',message:'Progress changed'}),{status:409,headers:{'Content-Type':'application/json'}})}}});
  const {error}=await client.rpc('save_game_profile',{});assert.equal(error.code,'PT409');assert.equal(requests,1);
 });
+
+const edgeErrors=load(read('src/edgeErrors.ts'),()=>{});
+await test('Edge Function HTTP errors show the response body and preserve it',async()=>{
+ const context=new Response(JSON.stringify({error:'permission denied for table user_game_permissions'}),{status:500});
+ assert.equal(await edgeErrors.edgeErrorMessage({message:'Edge Function returned a non-2xx status code',context}),'permission denied for table user_game_permissions');assert.equal(context.bodyUsed,false);
+});
+await test('non-JSON gateway errors fall back to a useful message',async()=>{
+ assert.equal(await edgeErrors.edgeErrorMessage({message:'Gateway unavailable',context:new Response('not JSON',{status:502})}),'Gateway unavailable');
+});
+await test('business response error takes priority over generic SDK error',async()=>{
+ assert.equal(await edgeErrors.edgeErrorMessage({message:'generic'},{error:'Game not found'}),'Game not found');
+});
+
 console.log(JSON.stringify({environment:'isolated synchronization, navigation, authentication and pagination regressions',results},null,2));
 if(results.some(r=>r.result==='FAIL'))process.exitCode=1;
