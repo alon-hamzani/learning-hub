@@ -35,7 +35,7 @@ export default function Admin() {
         supabase.from('app_users').select('*').order('created_at', { ascending: false }).limit(1000),
         supabase.from('student_profiles').select('id,owner_id,name,avatar').limit(1000),
         supabase.from('game_sessions').select('*').order('started_at', { ascending: false }).limit(1000),
-        supabase.from('activity_events').select('id,owner_id,student_id,event_type,created_at').order('created_at', { ascending: false }).limit(1000),
+        supabase.from('activity_events').select('id,game_id,owner_id,student_id,event_type,created_at').order('created_at', { ascending: false }).limit(1000),
         supabase.from('admin_audit').select('id,action,admin_user_id,target_user_id,created_at').order('created_at', { ascending: false }).limit(500),
         supabase.from('games').select('*').order('created_at').limit(1000),
         supabase.from('user_game_permissions').select('*').limit(2000),
