@@ -28,13 +28,14 @@ export type CloudEvent = { sessionId: string; question: Question; action: 'answe
 export type CloudGameStart = { id: string; studentId: string; worldId: number; mode: QuizMode; count: number };
 export interface GameCloud {
   onProfilesChanged: (profiles: Profile[]) => void;
+  deleteProfile: (id: string) => Promise<void>;
   onModuleEvent: (studentId: string, eventKind: string, payload?: Record<string,unknown>) => void;
   onSessionStart: (run: CloudGameStart) => void;
   onGameEvent: (event: CloudEvent) => void;
   onSessionComplete: (id: string) => void;
   onActivity: (kind: 'lesson_completed' | 'profile_created' | 'profile_reset' | 'profile_deleted' | 'mini_game', studentId?: string, meta?: Record<string, unknown>) => void;
 }
-export function createGameCloud(ownerId: string, gameId: string, onFailure: (message: string) => void): GameCloud & { flush: () => Promise<void> } {
+export function createGameCloud(ownerId: string, gameId: string, onFailure: (message: string) => void, initialProfiles: Profile[] = []): GameCloud & { flush: () => Promise<void> } {
   let chain = Promise.resolve();
   // Ordered writes: session creation precedes answers; answers precede finalization.
   const append = (job: () => Promise<void>) => {
@@ -42,39 +43,52 @@ export function createGameCloud(ownerId: string, gameId: string, onFailure: (mes
       try { await job(); } catch (err) { onFailure(err && typeof err === 'object' && 'message' in err ? String(err.message) : String(err)); }
     });
   };
-  let lastSnapshot = '';
-  const pendingSnapshots = new Set<string>();
+  const content = (p: Profile) => { const { _revision, ...snapshot } = p; return JSON.stringify(snapshot); };
+  const revisions = new Map(initialProfiles.map(p => [p.id, p._revision ?? null]));
+  const saved = new Map(initialProfiles.map(p => [p.id, content(p)]));
+  const conflicted = new Set<string>();
+  let latestRequest = '';
   const api: GameCloud & { flush: () => Promise<void> } = {
     flush: () => chain,
     onProfilesChanged(profiles) {
       const current = JSON.stringify(profiles);
-      if (current === lastSnapshot || pendingSnapshots.has(current)) return;
-      pendingSnapshots.add(current);
+      if (current === latestRequest) return;
+      latestRequest = current;
+      // Freeze the request, so later mutations cannot alter an already queued save.
+      const requested = profiles.map(p => JSON.parse(content(p)) as Profile);
       append(async () => {
         try {
-        const { data: currentRows, error: listError } = await supabase.from('student_profiles').select('id').eq('owner_id', ownerId);
-        if (listError) throw listError;
-        for (const p of profiles) {
-          const { error: kidError } = await supabase.from('student_profiles').upsert({
-            id: p.id, owner_id: ownerId, name: p.name, avatar: p.avatar,
-          }, { onConflict: 'id' });
-          if (kidError) throw kidError;
-          const { error: progressError } = await supabase.from('game_progress').upsert({
-            owner_id: ownerId, student_id: p.id, game_id: gameId, snapshot: p,
-          }, { onConflict: 'student_id,game_id' });
-          if (progressError) throw progressError;
-        }
-        // Deleting a child profile is a deliberate global deletion, including progress in every game.
-        const keep = new Set(profiles.map(p => p.id));
-        for (const row of currentRows || []) {
-          if (!keep.has(row.id)) {
-            const { error } = await supabase.from('student_profiles').delete().eq('id', row.id).eq('owner_id', ownerId);
-            if (error) throw error;
+          for (const p of requested) {
+            if (saved.get(p.id) === content(p)) continue;
+            if (conflicted.has(p.id)) throw new Error('ההתקדמות השתנתה במכשיר אחר. יש לרענן את הדף לפני שממשיכים.');
+            const { data, error } = await supabase.rpc('save_game_profile', {
+              p_student_id: p.id, p_game_id: gameId, p_snapshot: p,
+              p_expected_revision: revisions.get(p.id) ?? null,
+            });
+            if (error) {
+              if (error.code === '40001') {
+                conflicted.add(p.id);
+                throw new Error('ההתקדמות השתנתה במכשיר אחר. יש לרענן את הדף לפני שממשיכים.');
+              }
+              throw error;
+            }
+            revisions.set(p.id, Number(data)); saved.set(p.id, content(p));
           }
+        } catch (error) {
+          if (latestRequest === current) latestRequest = '';
+          throw error;
         }
-        lastSnapshot = current;
-        } finally { pendingSnapshots.delete(current); }
       });
+    },
+    async deleteProfile(id) {
+      let failure: unknown;
+      append(async () => {
+        const { error } = await supabase.rpc('delete_student_profile', { p_student_id: id });
+        if (error) { failure = error; throw error; }
+        saved.delete(id); revisions.delete(id); conflicted.delete(id); latestRequest = '';
+      });
+      await chain;
+      if (failure) throw failure;
     },
     onModuleEvent(studentId,eventKind,payload) {
       append(async () => {
@@ -134,10 +148,11 @@ export async function readStudentProfiles(ownerId: string, gameId: string): Prom
     .select('id,name,avatar').eq('owner_id',ownerId).order('created_at');
   if (kidError) throw kidError;
   const { data: progress, error: progressError } = await supabase.from('game_progress')
-    .select('student_id,snapshot').eq('owner_id',ownerId).eq('game_id',gameId);
+    .select('student_id,snapshot,revision').eq('owner_id',ownerId).eq('game_id',gameId);
   if (progressError) throw progressError;
-  const progressByStudent = new Map((progress || []).map(p => [p.student_id, p.snapshot as Profile]));
-  return (kids || []).map(kid => progressByStudent.get(kid.id) || {
-    ...createProfile(kid.name, kid.avatar), id: kid.id,
-  });
+  const progressByStudent = new Map((progress || []).map(p => [p.student_id, { ...(p.snapshot as Profile), _revision: Number(p.revision) }]));
+  return (kids || []).map(kid => ({
+    ...(progressByStudent.get(kid.id) || createProfile(kid.name, kid.avatar)),
+    id: kid.id, name: kid.name, avatar: kid.avatar,
+  }));
 }

@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowRight, BookOpen, LogIn, LogOut, RefreshCw, Shield, ShieldAlert, Sparkles } from 'lucide-react';
-import Admin from './Admin';
 import LearningHub from './LearningHub';
 import { cloudReady, createGameCloud, readCatalog, readStudentProfiles, supabase } from './cloud';
 import type { AppUser, CatalogGame } from './cloud';
@@ -8,6 +7,7 @@ import type { Profile } from './game';
 import { registeredModules, moduleInstalled } from './games/registry';
 import './cloud.css';
 import './hub.css';
+const Admin = lazy(() => import('./Admin'));
 
 type AuthMode = 'loading'|'logged_out'|'pending'|'rejected'|'suspended'|'approved'|'error';
 const currentRoute = () => window.location.hash.replace(/^#\/?/,'') || 'home';
@@ -28,7 +28,8 @@ export default function AuthGate() {
     try {
       const { data: auth, error } = await supabase.auth.getUser();
       if (error || !auth.user) { setMode('logged_out'); setMe(null); setGames([]); setStudents(null); return; }
-      void supabase.rpc('touch_login');
+      const { error: loginError } = await supabase.rpc('touch_login');
+      if (loginError) console.warn('לא ניתן לעדכן את מועד ההתחברות:', loginError.message);
       const { data, error: profileError } = await supabase.from('app_users').select('*').eq('id',auth.user.id).single();
       if (profileError || !data) throw profileError || new Error('פרטי משתמש לא נמצאו');
       const account = data as AppUser;
@@ -65,7 +66,7 @@ export default function AuthGate() {
     return () => { alive = false; };
   }, [mode, me?.id, selectedGame?.id, activeGameId]);
   const cloud = useMemo(() => (me?.status === 'approved' && activeGameId)
-    ? createGameCloud(me.id, activeGameId, setSyncError) : null, [me?.id, me?.status, activeGameId]);
+    ? createGameCloud(me.id, activeGameId, setSyncError, students || []) : null, [me?.id, me?.status, activeGameId, students]);
   async function login() {
     setBusy(true); setErrorText('');
     const { error } = await supabase.auth.signInWithOAuth({
@@ -76,6 +77,10 @@ export default function AuthGate() {
   async function goHome() {
     if (cloud) await cloud.flush();
     setRoute('home');
+  }
+  async function goAdmin() {
+    if (cloud) await cloud.flush();
+    setRoute(route === 'admin' ? 'home' : 'admin');
   }
   async function logout() {
     if (cloud) await cloud.flush();
@@ -91,11 +96,12 @@ export default function AuthGate() {
       <div className="cloud-toolbar hub-toolbar" dir="rtl"><button className="hub-brand" onClick={() => void goHome()}><BookOpen size={21}/> מרכז הלמידה</button>
         <div><span className="hub-username">☁️ {me.full_name || me.email}</span>
           {selectedGame && <button onClick={() => void goHome()}><ArrowRight size={17}/> לכל המשחקים</button>}
-          {admin && <button onClick={() => setRoute(showAdmin ? 'home':'admin')}><Shield size={16}/> {showAdmin ? 'ספריית המשחקים':'ממשק ניהול'}</button>}
+          {admin && <button onClick={() => void goAdmin()}><Shield size={16}/> {showAdmin ? 'ספריית המשחקים':'ממשק ניהול'}</button>}
           <button onClick={logout}><LogOut size={16}/> יציאה</button>
         </div>
       </div>
-      {syncError && <div className="cloud-error" role="alert">לא ניתן לסנכרן נתונים: {syncError} <button onClick={() => setSyncError('')}>סגור</button></div>}
+      {syncError && <div className="cloud-error" role="alert">לא ניתן לסנכרן נתונים: {syncError} <button onClick={() => window.location.reload()}>רענון נתונים מהענן</button> <button onClick={() => setSyncError('')}>סגור</button></div>}
+      <Suspense fallback={<main className="hub-loading" dir="rtl">טוענים…</main>}>
       {showAdmin ? <Admin /> : selectedGame && Component ?
         activeGameId === selectedGame.id && students && cloud ?
           <Component key={`${me.id}:${selectedGame.id}`} initialProfiles={students} cloud={cloud}/>
@@ -106,6 +112,7 @@ export default function AuthGate() {
           <button onClick={() => setRoute('home')}>חזרה לספריית המשחקים</button>
         </main> : <LearningHub games={games} displayName={me.full_name || me.email} isAdmin={admin}
           openGame={g => setRoute(`games/${g.id}`)}/>}
+      </Suspense>
     </div>;
   }
   return <main className="cloud-auth" dir="rtl"><section className="cloud-auth-card">

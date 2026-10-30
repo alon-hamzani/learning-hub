@@ -4,7 +4,7 @@ import { ArrowLeft, ArrowRight, BookOpen, Check, CheckCircle2, ChevronLeft, Circ
 import {
   AVATARS, BADGES, WORLDS, badgesFor, createProfile, currentWorldIndex, dayKey, firstHitCount,
   formatNumber, makeQuestion, makeQuiz, masteryCount, ordinaryCompletedCount, pairKey, percent,
-  recordSkill, shuffle, skillLevel, totalAttempts, worldCompleted, worldIsUnlocked,
+  recordSkill, shuffle, skillLevel, totalAttempts, worldCompleted, worldIsUnlocked, canOpenWorld, canStartQuiz,
 } from './game';
 import type { Profile, Question, QuizMode, World } from './game';
 import type { GameCloud, CloudEvent } from './cloud';
@@ -44,7 +44,13 @@ function say(text: string) {
 }
 function App({ initialProfiles, cloud }: { initialProfiles: Profile[]; cloud: GameCloud }) {
   const [profiles, setProfiles] = useState<Profile[]>(initialProfiles);
-  const [activeId, setActiveId] = useState(() => initialProfiles[0]?.id || '');
+  const [activeId, setActiveId] = useState(() => {
+    try {
+      const previous = localStorage.getItem('learning-hub:active-profile');
+      if (initialProfiles.some(p => p.id === previous)) return previous!;
+    } catch { /* Profile selection is optional on devices that block storage. */ }
+    return initialProfiles[0]?.id || '';
+  });
   const [page, setPage] = useState<Page>('home');
   const [worldId, setWorldId] = useState(0);
   const [session, setSession] = useState<Session | null>(null);
@@ -54,6 +60,7 @@ function App({ initialProfiles, cloud }: { initialProfiles: Profile[]; cloud: Ga
   const [notice, setNotice] = useState('');
   const active = profiles.find(p => p.id === activeId) ?? null;
   useEffect(() => { cloud.onProfilesChanged(profiles); }, [profiles, cloud]);
+  useEffect(() => { try { localStorage.setItem('learning-hub:active-profile', activeId); } catch { /* optional */ } }, [activeId]);
   useEffect(() => { if (!notice) return; const timeout = setTimeout(() => setNotice(''), 4200); return () => clearTimeout(timeout); }, [notice]);
   const updateActive = (fn: (p: Profile) => Profile) => setProfiles(ps => ps.map(p => {
     if (p.id !== activeId) return p;
@@ -69,10 +76,16 @@ function App({ initialProfiles, cloud }: { initialProfiles: Profile[]; cloud: Ga
     setNotice(`איזה כיף, ${p.name}! המסע שלך מתחיל עכשיו 🌟`);
   }
   function navigate(p: Page) { setPage(p); setMenuOpen(false); window.scrollTo({ top: 0, behavior: 'smooth' }); }
-  function openWorld(id: number) { setWorldId(id); navigate('world'); }
-  function startLesson(id: number) { setWorldId(id); navigate('lesson'); }
+  function checkWorld(id: number) {
+    if (active && canOpenWorld(active, id)) return true;
+    setNotice('העולם הזה עדיין נעול. משלימים קודם את העולמות הקודמים.'); return false;
+  }
+  function openWorld(id: number) { if (checkWorld(id)) { setWorldId(id); navigate('world'); } }
+  function startLesson(id: number) { if (checkWorld(id)) { setWorldId(id); navigate('lesson'); } }
   function startQuiz(mode: QuizMode, id: number, table?: number) {
     if (!active) return;
+    if (!checkWorld(id)) return;
+    if (!canStartQuiz(active, id, mode)) { setNotice('משלימים קודם את השלב הקודם בעולם הזה.'); return; }
     const runId = crypto.randomUUID();
     const questions = makeQuiz(id, mode, active, table);
     cloud.onSessionStart({ id: runId, studentId: active.id, worldId: id, mode, count: questions.length });
@@ -110,10 +123,12 @@ function App({ initialProfiles, cloud }: { initialProfiles: Profile[]; cloud: Ga
       return next;
     });
   }
-  function resetKid(id: string, deleteEntirely: boolean) {
+  async function resetKid(id: string, deleteEntirely: boolean) {
     const target = profiles.find(p => p.id === id); if (!target) return;
     if (!window.confirm(deleteEntirely ? `למחוק לצמיתות את הפרופיל של ${target.name} ואת כל ההישגים שלו?` : `לאפס את ההתקדמות של ${target.name}? כל הנקודות וההישגים יימחקו.`)) return;
     if (deleteEntirely) {
+      try { await cloud.deleteProfile(id); }
+      catch { setNotice('המחיקה לא הושלמה. הפרופיל נשאר ברשימה; אפשר לנסות שוב.'); return; }
       const remaining = profiles.filter(p => p.id !== id);
       cloud.onActivity('profile_deleted', undefined, { profileId: id });
       cloud.onProfilesChanged(remaining);
@@ -373,6 +388,7 @@ function GamesPage({ profile, onPlay, onRecord }: { profile: Profile; onPlay: (m
         <GameCard icon="🏗️" title="מגדל הכפל" subtitle="בכל תשובה בונים עוד קומה" color="peach" onClick={() => onPlay('tower', table)}/>
         <GameCard icon="🗝️" title="צייד האוצרות" subtitle="אוספים מפתחות בדרך לתיבה" color="yellow" onClick={() => onPlay('treasure', table)}/>
         <GameCard icon="🎯" title="חיזוק אישי" subtitle="תרגילים חכמים לפי מה שכדאי לחזק" color="pink" onClick={() => onPlay('focused', table)}/>
+        <GameCard icon="🧭" title="מסע בין הכפולות" subtitle="30 שאלות מגוונות מעולמות שכבר נפתחו" color="sky" onClick={() => onPlay('mixed')}/>
       </div></> : <div><button className="back-link" onClick={() => setMini(null)}><ArrowRight size={18}/> לכל המשחקים</button>{mini === 'memory' ? <MemoryGame key={`memory_${table}`} table={table} onRecord={onRecord}/> : <BingoGame key={`bingo_${table}`} table={table} onRecord={onRecord}/>}</div>}
   </>;
 }
@@ -440,7 +456,7 @@ function ProgressPage({ profile, onWorld, onPractice }: { profile: Profile; onWo
     <section className="stat-grid"><Stat icon="⭐" value={formatNumber(profile.xp)} label="כוכבים" color="peach"/><Stat icon="🏅" value={earned.length.toString()} label="מדליות" color="lavender"/><Stat icon="🎯" value={`${mastered}/100`} label="צירופים בשליטה" color="mint"/><Stat icon="🧩" value={formatNumber(totalAttempts(profile))} label="תרגילים שפתרתי" color="sky"/></section>
     <section className="panel heatmap-panel"><div className="panel-head"><div><div className="eyebrow">לוח ההתקדמות שלי</div><h2>טבלת כפל חכמה</h2></div><div className="heatmap-legend"><span><i className="dot-unseen"/> חדש</span><span><i className="dot-needs"/> חיזוק</span><span><i className="dot-learning"/> מתרגלים</span><span><i className="dot-mastered"/> שליטה</span></div></div><p className="quiet-note">לוחצים על משבצת כדי לתרגל את הכפולות שלה. שליטה מתבססת על תשובות נכונות בכמה ימים שונים.</p><div className="heatmap-scroll"><div className="heatmap" role="table" aria-label="רמות השליטה בלוח הכפל"><div className="heat-header">×</div>{Array.from({ length: 10 }, (_, i) => <div className="heat-header" key={`x${i}`}>{i + 1}</div>)}{Array.from({ length: 10 }, (_, a) => [<div className="heat-header" key={`y${a}`}>{a + 1}</div>, ...Array.from({ length: 10 }, (_, b) => { const level = skillLevel(profile.skills[pairKey(a + 1, b + 1)]); return <button key={`${a}-${b}`} title={`${a + 1} × ${b + 1} = ${(a + 1) * (b + 1)} · ${levelLabel[level]}`} aria-label={`${a + 1} כפול ${b + 1}: ${levelLabel[level]}`} className={`heat-cell ${level}`} onClick={() => onPractice(a + 1)}>{(a + 1) * (b + 1)}</button>; })])}</div></div></section>
     <section className="panel badge-panel"><div className="panel-head"><div><div className="eyebrow">איזה אוסף מדהים</div><h2>אוסף המדליות שלי</h2></div><span className="muted">{earned.length}/{BADGES.length} מדליות</span></div><div className="badge-grid">{BADGES.map(b => <div className={`badge-item ${earned.includes(b.id) ? 'unlocked' : 'not-yet'}`} key={b.id}><span className="badge-emoji">{earned.includes(b.id) ? b.icon : '🔒'}</span><b>{b.name}</b><span>{b.detail}</span></div>)}</div></section>
-    <div className="section-heading"><h2>העולמות שכבר הכרתי</h2></div><div className="achievement-worlds">{WORLDS.filter(w => w.id !== 99).map(w => <button className="mini-world" key={w.id} onClick={() => onWorld(w.id)}><span>{w.icon}</span><b>{w.short}</b>{worldCompleted(profile, w.id) ? <CheckCircle2 size={17} className="green-check"/> : <span className="mini-world-dash">—</span>}</button>)}</div>
+    <div className="section-heading"><h2>העולמות שכבר הכרתי</h2></div><div className="achievement-worlds">{WORLDS.filter(w => w.id !== 99).map(w => <button className="mini-world" key={w.id} disabled={!canOpenWorld(profile,w.id)} onClick={() => onWorld(w.id)}><span>{w.icon}</span><b>{w.short}</b>{!canOpenWorld(profile,w.id) ? <LockKeyhole size={17}/> : worldCompleted(profile, w.id) ? <CheckCircle2 size={17} className="green-check"/> : <span className="mini-world-dash">—</span>}</button>)}</div>
   </>;
 }
 function ParentsPage({ profile, onPractice, onReset }: { profile: Profile; onPractice: (n: number) => void; onReset: () => void }) {

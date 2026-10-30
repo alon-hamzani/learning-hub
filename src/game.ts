@@ -6,6 +6,7 @@ export type Skill = { seen: number; firstCorrect: number; wrong: number; guidedC
 export type WorldProgress = { lesson?: boolean; guided?: boolean; practice?: boolean; checkpoint?: boolean; best?: number };
 export type RecordAttempt = { when: number; worldId: number; correct: number; total: number; label: string };
 export type Profile = {
+  _revision?: number;
   id: string; name: string; avatar: string; joined: number; xp: number; sound: boolean;
   progress: Record<string, WorldProgress>; skills: Record<string, Skill>;
   activity: RecordAttempt[]; earnedBadges: string[]; dailyDate?: string;
@@ -66,7 +67,16 @@ export const totalAttempts = (p: Profile) => Object.values(p.skills).reduce((sum
 export const firstHitCount = (p: Profile) => Object.values(p.skills).reduce((sum, s) => sum + s.firstCorrect, 0);
 export const worldCompleted = (p: Profile, id: number) => Boolean(p.progress[id]?.checkpoint);
 export const ordinaryCompletedCount = (p: Profile) => WORLDS.filter(w => w.id !== 99 && worldCompleted(p, w.id)).length;
-export const worldIsUnlocked = (p: Profile, index: number) => index === 0 || worldCompleted(p, WORLDS[index - 1].id);
+export const worldIsUnlocked = (p: Profile, index: number) => index >= 0 && index < WORLDS.length &&
+  WORLDS.slice(0, index).every(w => worldCompleted(p, w.id));
+export const canOpenWorld = (p: Profile, id: number) => worldIsUnlocked(p, WORLDS.findIndex(w => w.id === id));
+export const canStartQuiz = (p: Profile, id: number, mode: QuizMode) => {
+  if (!canOpenWorld(p, id)) return false;
+  const progress = p.progress[id];
+  return mode === 'guided' ? Boolean(progress?.lesson)
+    : mode === 'practice' ? Boolean(progress?.guided)
+    : mode === 'checkpoint' ? Boolean(progress?.practice) : true;
+};
 export const currentWorldIndex = (p: Profile) => {
   const idx = WORLDS.findIndex((_, i) => !worldIsUnlocked(p, i) || !worldCompleted(p, WORLDS[i].id));
   return idx === -1 ? WORLDS.length - 1 : Math.max(0, idx);
@@ -106,7 +116,7 @@ function pickFact(worldId: number, profile: Profile, mode: QuizMode, index: numb
   const candidates: [number, number][] = [];
   if (worldId === 99 || mode === 'mixed' || mode === 'daily') {
     const unlocked = WORLDS.filter((_, i) => i > 0 && i < WORLDS.length - 1 && worldIsUnlocked(profile, i)).map(w => w.id);
-    const tables = (worldId === 99 || mode === 'mixed') ? Array.from({ length: 10 }, (_, i) => i + 1) : unlocked.length ? unlocked : [1, 2];
+    const tables = worldId === 99 ? Array.from({ length: 10 }, (_, i) => i + 1) : unlocked.length ? unlocked : [1, 2];
     for (const a of tables) for (let b = 1; b <= 10; b++) candidates.push([a, b]);
   } else {
     for (let b = 1; b <= 10; b++) candidates.push([worldId, b]);
