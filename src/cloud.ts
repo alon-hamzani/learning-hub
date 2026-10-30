@@ -68,7 +68,7 @@ export function createGameCloud(ownerId: string, gameId: string, onFailure: (mes
               p_expected_revision: revisions.get(p.id) ?? null,
             });
             if (error) {
-              if (error.code === '40001') {
+              if (error.code === 'PT409' || error.code === '40001') {
                 conflicted.add(p.id);
                 throw new Error('ההתקדמות השתנתה במכשיר אחר. יש לרענן את הדף לפני שממשיכים.');
               }
