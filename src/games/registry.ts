@@ -1,5 +1,6 @@
 // Add a new deployed React game module here. A catalog record alone cannot publish executable code.
-import App from '../App';
+import { lazy } from 'react';
+const App = lazy(() => import('../App'));
 export const registeredModules = {
   'multiplication-quest': App,
 };
