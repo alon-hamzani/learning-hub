@@ -15,9 +15,10 @@ async function test(name,fn){try{await fn();results.push({name,result:'PASS'})}c
 const base={...game.createProfile('QA','🦊'),id:'child-a',_revision:1};
 function fixture(initial=[base]) {
   const rows=new Map(initial.map(p=>[p.id,{revision:p._revision,snapshot:structuredClone(p)}]));
-  const calls=[],errors=[];let fail=false;
+  const calls=[],errors=[];let fail=false,networkFailure=false;
   const client={from(){throw Error('Profile writes must use guarded RPCs')},async rpc(name,data){
     calls.push({name,data:structuredClone(data)});
+    if(networkFailure)throw Error('Network unavailable');
     if(fail){fail=false;return {error:{message:'Temporary failure'}}}
     if(name==='delete_student_profile'){rows.delete(data.p_student_id);return {error:null}}
     const previous=rows.get(data.p_student_id);
@@ -26,7 +27,7 @@ function fixture(initial=[base]) {
   }};
   const source=read('src/cloud.ts').replace(/import\.meta\.env\.VITE_SUPABASE_URL/g,"'https://example.invalid'").replace(/import\.meta\.env\.VITE_SUPABASE_PUBLISHABLE_KEY/g,"'public-test'");
   const cloud=load(source,n=>n==='@supabase/supabase-js'?{createClient:()=>client}:game);
-  return {rows,calls,errors,fail:()=>{fail=true},cloud:cloud.createGameCloud('owner','multiplication-quest',m=>errors.push(m),initial)};
+  return {rows,calls,errors,fail:()=>{fail=true},offline:()=>{networkFailure=true},cloud:cloud.createGameCloud('owner','multiplication-quest',m=>errors.push(m),initial)};
 }
 await test('stale list never deletes a child created on another device',async()=>{
   const f=fixture();f.rows.set('child-b',{revision:1,snapshot:{name:'Other child'}});
@@ -51,6 +52,13 @@ await test('delete requires the explicit delete API and retains unrelated profil
   const f=fixture();f.rows.set('other',{revision:1});await f.cloud.deleteProfile(base.id);assert(!f.rows.has(base.id));assert(f.rows.has('other'));
 });
 await test('unchanged initial data creates no write',async()=>{const f=fixture();f.cloud.onProfilesChanged([base]);await f.cloud.flush();assert.equal(f.calls.length,0)});
+await test('a conflict in one child does not block another child saving',async()=>{
+  const b={...base,id:'child-b'},f=fixture([base,b]);f.rows.set(base.id,{revision:2,snapshot:{xp:100}});
+  f.cloud.onProfilesChanged([{...base,xp:20},{...b,xp:30}]);await f.cloud.flush();assert.equal(f.rows.get(b.id).snapshot.xp,30);
+});
+await test('network failure during deletion rejects and keeps the profile',async()=>{
+  const f=fixture();f.offline();await assert.rejects(()=>f.cloud.deleteProfile(base.id),/Network unavailable/);assert(f.rows.has(base.id));
+});
 await test('pagination loads 1203 rows without dropping records beyond the first 1000',async()=>{
   const data=Array.from({length:1203},(_,id)=>({id})),ranges=[];
   const rows=await pagination.readAllPages(async(from,to)=>(ranges.push([from,to]),{data:data.slice(from,to+1),error:null}));
