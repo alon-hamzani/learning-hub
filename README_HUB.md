@@ -23,6 +23,7 @@
    - `supabase/migrations/20261030_server_privileges.sql`
    - `supabase/migrations/20261030_sync_safety.sql`
    - `supabase/migrations/20261030_admin_summary.sql`
+   - `supabase/migrations/20261030_sync_conflict_response.sql`
 3. Google OAuth: ב־Google Cloud Console צור Web OAuth Client והוסף URI מסוג `https://PROJECT_REF.supabase.co/auth/v1/callback`. הגדר Client ID ו־Client Secret בספק Google של Supabase.
 4. ב־Supabase Auth > URL Configuration הוסף את הדומיין שבו יפורסם המשחק (Netlify או GitHub Pages).
 5. הגדר ושלח פריסה לשלוש Edge Functions: `admin-action`, `notify-approval`, `admin-game-action`. שמור את `RESEND_API_KEY` ו־`EMAIL_FROM` **רק** ב־Supabase Functions Secrets. ניתן לעשות זאת דרך Dashboard או Supabase CLI.
@@ -102,3 +103,5 @@ npm test
 בפרויקט שכבר כולל את ארבע המיגרציות הראשונות יש להריץ רק `20261030_sync_safety.sql` ואז `20261030_admin_summary.sql`, לפני פרסום הלקוח החדש. המיגרציות אינן מוחקות התקדמות. גרסה ישנה של לקוח אינה יכולה לעקוף את כתיבת הגרסאות; לאחר הפריסה יש לרענן לשוניות ישנות.
 
 ארבע פונקציות השרת נמצאות במאגר. `email-delivery-check` היא פונקציית אבחון מוגנת במפתח שרת בלבד, עם נמען ותוכן קבועים ומפתח מניעת כפילויות. אין להכניס מפתחות שרת ללקוח או למאגר. אין לקרוא לה כחלק מבדיקות אוטומטיות חיות. `supabase/config.toml` מתעד את מצב השער הקיים: האימות מתבצע בקוד הפונקציות, כולל בדיקת תפקיד וסטטוס בפעולות ניהול. סודות נשמרים ב־Supabase בלבד.
+
+לאחר שתי מיגרציות התיקון יש להריץ גם `20261030_sync_conflict_response.sql`: התנגשות גרסאות היא HTTP 409 ולא כשל שרת הניתן לניסיון חוזר.
