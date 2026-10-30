@@ -47,6 +47,7 @@ export function createGameCloud(ownerId: string, gameId: string, onFailure: (mes
   const revisions = new Map(initialProfiles.map(p => [p.id, p._revision ?? null]));
   const saved = new Map(initialProfiles.map(p => [p.id, content(p)]));
   const conflicted = new Set<string>();
+  const deleted = new Set<string>();
   let latestRequest = '';
   const api: GameCloud & { flush: () => Promise<void> } = {
     flush: () => chain,
@@ -60,6 +61,7 @@ export function createGameCloud(ownerId: string, gameId: string, onFailure: (mes
         try {
           let failure: unknown;
           for (const p of requested) {
+            if (deleted.has(p.id)) continue;
             try {
             if (saved.get(p.id) === content(p)) continue;
             if (conflicted.has(p.id)) throw new Error('ההתקדמות השתנתה במכשיר אחר. יש לרענן את הדף לפני שממשיכים.');
@@ -90,6 +92,7 @@ export function createGameCloud(ownerId: string, gameId: string, onFailure: (mes
         try {
         const { error } = await supabase.rpc('delete_student_profile', { p_student_id: id });
         if (error) throw error;
+        deleted.add(id);
         saved.delete(id); revisions.delete(id); conflicted.delete(id); latestRequest = '';
         } catch (error) { failure = error; throw error; }
       });
