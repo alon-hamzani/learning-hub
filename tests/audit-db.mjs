@@ -4,15 +4,19 @@ const db=new PGlite();
 const results=[];
 const check=async(name,fn)=>{try{await fn();results.push({name,result:'PASS'});}catch(e){results.push({name,result:'FAIL',detail:e.message});}};
 const assert=(x,m)=>{if(!x)throw Error(m)};
-await db.exec(`create role anon; create role authenticated; create schema auth;
+await db.exec(`create role anon; create role authenticated; create role service_role; create schema auth;
 create table auth.users(id uuid primary key,email text,email_confirmed_at timestamptz,raw_app_meta_data jsonb,raw_user_meta_data jsonb);
 create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
 grant usage on schema auth to authenticated,anon; grant execute on function auth.uid() to authenticated,anon;`);
-for(const name of ['20261030_cloud.sql','20261030_learning_hub.sql','20261030_audit_fixes.sql']){
+for(const name of ['20261030_cloud.sql','20261030_learning_hub.sql','20261030_audit_fixes.sql','20261030_server_privileges.sql']){
  const sql=readFileSync(new URL('../supabase/migrations/'+name,import.meta.url),'utf8').replace('create extension if not exists pgcrypto;','');
  await check('migration '+name,()=>db.exec(sql));
 }
 const admin='10000000-0000-4000-8000-000000000001',a='10000000-0000-4000-8000-000000000002',b='10000000-0000-4000-8000-000000000003',pending='10000000-0000-4000-8000-000000000004';
+await check('server role has required SQL privileges',async()=>{
+ const r=(await db.query(`select has_table_privilege('service_role','public.app_users','SELECT,UPDATE') as users,has_table_privilege('service_role','public.games','SELECT,INSERT,UPDATE') as games,has_table_privilege('service_role','public.admin_audit','INSERT') as audit`)).rows[0];
+ assert(r.users&&r.games&&r.audit,'missing server privileges');
+});
 for(const [id,email,confirmed] of [[admin,'alon.hamzani@gmail.com',true],[a,'qa-a@example.invalid',true],[b,'qa-b@example.invalid',true],[pending,'qa-pending@example.invalid',false]])await db.query(`insert into auth.users values($1,$2,$3,'{"provider":"google"}','{}')`,[id,email,confirmed?new Date().toISOString():null]);
 await check('admin bootstrap verified-at-insert',async()=>assert((await db.query(`select role,status from app_users where id=$1`,[admin])).rows[0].role==='super_admin','not admin'));
 await db.exec(`update app_users set status='approved' where id in ('${a}','${b}'); insert into user_game_permissions(user_id,game_id) values('${a}','multiplication-quest'),('${b}','multiplication-quest'); insert into student_profiles(id,owner_id,name) values('qa-child-a','${a}','QA A'),('qa-child-b','${b}','QA B');`);
