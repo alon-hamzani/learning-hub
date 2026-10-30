@@ -43,6 +43,71 @@ await check('admin confirmation after signup',async()=>{
  await db.exec(`update auth.users set email_confirmed_at=now() where id='${admin}'`);
  assert((await db.query(`select role,status from app_users where id='${admin}'`)).rows[0].role==='super_admin','confirmation did not promote');
 });
-console.log(JSON.stringify({environment:'isolated PGlite PostgreSQL; mock auth.uid; pgcrypto creation omitted (built-in UUID)',results},null,2));
+await db.exec(`insert into user_game_permissions(user_id,game_id) values('${a}','multiplication-quest') on conflict do nothing`);
+await check('ordinary cannot read admin audit',()=>as(a,async()=>assert((await db.query('select * from admin_audit')).rows.length===0,'audit exposed')));
+await check('ordinary cannot read approval notifications',()=>as(a,()=>denied(()=>db.query('select * from approval_notifications'))));
+await check('ordinary cannot write scores',()=>as(a,()=>denied(()=>db.exec(`update game_sessions set score=100`))));
+await check('ordinary cannot write result rows',()=>as(a,()=>denied(()=>db.exec(`delete from game_results`))));
+await check('ordinary cannot change user status',()=>as(a,()=>denied(()=>db.exec(`update app_users set status='approved'`))));
+await check('cross-account profile rename blocked',()=>as(a,async()=>assert((await db.query(`update student_profiles set name='intruder' where id='qa-child-b' returning id`)).rows.length===0,'foreign rename allowed')));
+await check('cross-account profile delete blocked',()=>as(a,async()=>assert((await db.query(`delete from student_profiles where id='qa-child-b' returning id`)).rows.length===0,'foreign delete allowed')));
+for(const status of ['suspended','rejected']) await check(status+' account cannot read progress',async()=>{await db.exec(`update app_users set status='${status}' where id='${a}'`);await as(a,async()=>assert((await db.query('select * from game_progress')).rows.length===0,'progress exposed'));await db.exec(`update app_users set status='approved' where id='${a}'`)});
+await check('finalize idempotent; finished answers blocked',()=>as(a,async()=>{
+ await db.exec(`insert into game_sessions(id,owner_id,student_id,world_id,mode,question_count) values('qa-idempotent','${a}','qa-child-a',2,'practice',1);insert into question_attempts(session_id,owner_id,student_id,question_uid,a,b,kind,action,response) values('qa-idempotent','${a}','qa-child-a','q1',2,6,'number','answer','00012')`);
+ await db.query(`select finalize_game('qa-idempotent')`);await db.query(`select finalize_game('qa-idempotent')`);
+ assert((await db.query(`select * from game_results where session_id='qa-idempotent'`)).rows.length===1,'duplicate result');
+ await denied(()=>db.exec(`insert into question_attempts(session_id,owner_id,student_id,question_uid,a,b,kind,action,response) values('qa-idempotent','${a}','qa-child-a','q2',2,6,'number','answer','12')`));
+}));
+await db.exec(`insert into game_sessions(id,owner_id,student_id,world_id,mode,question_count) values('qa-owner-check','${b}','qa-child-b',2,'practice',1)`);
+await check('cannot finalize another owner session',()=>as(a,()=>denied(()=>db.query(`select finalize_game('qa-owner-check')`))));
+await check('revocation blocks unfinished session finalization',()=>as(a,async()=>{await db.exec(`insert into game_sessions(id,owner_id,student_id,world_id,mode,question_count) values('qa-revoked','${a}','qa-child-a',2,'practice',1);reset role;delete from user_game_permissions where user_id='${a}';set local role authenticated;`);await denied(()=>db.query(`select finalize_game('qa-revoked')`))}));
+await check('question counts constrained',()=>as(a,()=>denied(()=>db.exec(`insert into game_sessions(id,owner_id,student_id,world_id,mode,question_count) values('qa-count','${a}','qa-child-a',2,'practice',0)`))));
+for(const name of ['20261030_sync_safety.sql','20261030_admin_summary.sql']) await check('migration '+name,()=>db.exec(readFileSync(new URL('../supabase/migrations/'+name,import.meta.url),'utf8')));
+await db.exec(`insert into user_game_permissions(user_id,game_id) values('${a}','multiplication-quest') on conflict do nothing`);
+const snapshot={id:'qa-child-a',name:'QA A',avatar:'🦊',xp:10};
+const save=(profile,revision)=>db.query('select save_game_profile($1,$2,$3,$4) revision',[profile.id,'multiplication-quest',profile,revision]);
+await check('atomic save updates revision and profile together',()=>as(a,async()=>{
+ const result=await save({...snapshot,name:'Atomic'},1);assert(Number(result.rows[0].revision)===2,'revision not incremented');
+ assert((await db.query(`select name from student_profiles where id='qa-child-a'`)).rows[0].name==='Atomic','identity not saved');
+}));
+await check('stale device update rejected without overwriting latest',()=>as(a,async()=>{
+ await save({...snapshot,xp:20},1);
+ await db.exec('savepoint stale');
+ await denied(()=>save({...snapshot,xp:1},1));
+ await db.exec('rollback to savepoint stale');
+ assert((await db.query(`select snapshot->>'xp' xp from game_progress where student_id='qa-child-a'`)).rows[0].xp==='20','stale write won');
+}));
+await check('existing profile cannot be overwritten as a new profile',()=>as(a,()=>denied(()=>save(snapshot,null))));
+await check('foreign child cannot be saved through RPC',()=>as(a,()=>denied(()=>save({...snapshot,id:'qa-child-b'},null))));
+await check('pending account cannot save profile',()=>as(pending,()=>denied(()=>save({...snapshot,id:'qa-pending'},null))));
+await check('new profile and progress created atomically',()=>as(a,async()=>{
+ const result=await save({...snapshot,id:'qa-new-child'},null);assert(Number(result.rows[0].revision)===1,'wrong first revision');
+ assert((await db.query(`select id from student_profiles where id='qa-child-b'`)).rows.length===0,'foreign profile exposed');
+}));
+await check('malformed snapshot rejected',()=>as(a,()=>denied(()=>save({...snapshot,name:''},1))));
+await check('legacy direct progress write blocked',()=>as(a,()=>denied(()=>db.exec(`update game_progress set snapshot='{}'`))));
+await check('legacy direct child deletion blocked',()=>as(a,()=>denied(()=>db.exec(`delete from student_profiles where id='qa-child-a'`))));
+await check('explicit own child deletion cascades progress',()=>as(a,async()=>{
+ await db.query(`select delete_student_profile('qa-child-a')`);
+ assert((await db.query(`select student_id from game_progress where student_id='qa-child-a'`)).rows.length===0,'progress remains');
+}));
+await check('explicit deletion cannot target another owner',()=>as(a,()=>denied(()=>db.query(`select delete_student_profile('qa-child-b')`))));
+await check('stale browser cannot recreate a deleted profile',()=>as(a,async()=>{
+ await db.query(`select delete_student_profile('qa-child-a')`); await denied(()=>save(snapshot,1));
+}));
+await check('ordinary user cannot read global summary',()=>as(a,()=>denied(()=>db.query('select admin_dashboard_summary()'))));
+await check('admin summary covers all data and per-game stats',()=>as(admin,async()=>{
+ const summary=(await db.query('select admin_dashboard_summary() summary')).rows[0].summary;
+ assert(summary.users===4,'wrong total users');assert(summary.games===1,'wrong game total');
+ assert(summary.byGame['multiplication-quest'],'missing per-game totals');
+}));
+await check('touch_login records timestamp and throttles repeated events',()=>as(a,async()=>{
+ await db.query('select touch_login()');await db.query('select touch_login()');
+ assert((await db.query(`select last_login_at from app_users where id='${a}'`)).rows[0].last_login_at,'no timestamp');
+ assert((await db.query(`select count(*)::int n from activity_events where owner_id='${a}' and event_type='login'`)).rows[0].n===1,'duplicate login event');
+}));
+
+console.log(JSON.stringify({environment:'isolated PostgreSQL second pass',results},null,2));
 if(results.some(r=>r.result==='FAIL'))process.exitCode=1;
 await db.close();
+
