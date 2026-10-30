@@ -59,6 +59,10 @@ await test('a conflict in one child does not block another child saving',async()
 await test('network failure during deletion rejects and keeps the profile',async()=>{
   const f=fixture();f.offline();await assert.rejects(()=>f.cloud.deleteProfile(base.id),/Network unavailable/);assert(f.rows.has(base.id));
 });
+await test('a save queued while explicit deletion is pending cannot recreate that child',async()=>{
+  const f=fixture(),deletion=f.cloud.deleteProfile(base.id);
+  f.cloud.onProfilesChanged([{...base,xp:30}]);await deletion;await f.cloud.flush();assert(!f.rows.has(base.id));
+});
 await test('pagination loads 1203 rows without dropping records beyond the first 1000',async()=>{
   const data=Array.from({length:1203},(_,id)=>({id})),ranges=[];
   const rows=await pagination.readAllPages(async(from,to)=>(ranges.push([from,to]),{data:data.slice(from,to+1),error:null}));
