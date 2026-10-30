@@ -5,6 +5,7 @@ import type { CatalogGame, UserGamePermission } from './cloud';
 import AdminGames, { UserGamePermissions } from './AdminGames';
 import type { AppUser, AccessStatus } from './cloud';
 import { readAllPages } from './pagination';
+import { edgeErrorMessage } from './edgeErrors';
 
 type Dashboard = { users:number; approved:number; pending:number; games:number; active7:number; active30:number; finished:number; average:number;
   byUser:Record<string,{sessions:number;average:number|null}>; byGame:Record<string,{sessions:number;users:number;average:number|null;grants:number}> };
@@ -74,7 +75,7 @@ export default function Admin() {
     if (!window.confirm(`${label} את ${user.full_name || user.email}?${action === 'delete' ? '\nכל נתוני החשבון והילדים שלו יימחקו לצמיתות!' : ''}`)) return;
     setBusy(true); setError('');
     const { data, error } = await supabase.functions.invoke('admin-action', { body: { targetId: user.id, action } });
-    if (error || data?.error) setError(error?.message || data.error);
+    if (error || data?.error) setError(await edgeErrorMessage(error, data));
     else { if (action === 'delete') setSelected(null); await refresh(); }
     setBusy(false);
   }

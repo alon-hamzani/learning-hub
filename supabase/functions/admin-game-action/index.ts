@@ -33,7 +33,8 @@ Deno.serve(async req => {
       if (!user || user.role === 'super_admin') return json(400, { error: 'User not eligible' });
       // Assignment is allowed even while Pending. Status still gates platform access.
       const result = action === 'grant'
-        ? await server.from('user_game_permissions').upsert({ user_id: user.id, game_id: gameId, granted_by: auth.user.id }, { onConflict: 'user_id,game_id' })
+        // A grant is idempotent. DO NOTHING preserves its original issuer and needs no UPDATE privilege.
+        ? await server.from('user_game_permissions').upsert({ user_id: user.id, game_id: gameId, granted_by: auth.user.id }, { onConflict: 'user_id,game_id', ignoreDuplicates: true })
         : await server.from('user_game_permissions').delete().eq('user_id',user.id).eq('game_id',gameId);
       if (result.error) throw result.error;
       const { error: auditError } = await server.from('admin_audit').insert({
@@ -61,6 +62,6 @@ Deno.serve(async req => {
     } else return json(400, { error: 'Unknown action' });
     return json(200, { ok:true });
   } catch (e) {
-    return json(500, { error:e instanceof Error ? e.message : 'Server error' });
+    return json(500, { error:e && typeof e === 'object' && 'message' in e ? String(e.message) : 'Server error' });
   }
 });
