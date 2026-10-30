@@ -3,10 +3,11 @@ import { Gamepad2, Plus, Save, ShieldCheck } from 'lucide-react';
 import { supabase } from './cloud';
 import type { AppUser, CatalogGame, UserGamePermission } from './cloud';
 import { moduleInstalled } from './games/registry';
+import { edgeErrorMessage } from './edgeErrors';
 
 async function callAdminGame(body: Record<string,unknown>) {
   const { data, error } = await supabase.functions.invoke('admin-game-action', { body });
-  if (error || data?.error) throw new Error(error?.message || data?.error || 'לא ניתן לבצע את הפעולה');
+  if (error || data?.error) throw new Error(await edgeErrorMessage(error, data));
 }
 export function UserGamePermissions({ user, games, grants, refresh }: {
   user: AppUser; games: CatalogGame[]; grants: UserGamePermission[]; refresh: () => Promise<void>;
