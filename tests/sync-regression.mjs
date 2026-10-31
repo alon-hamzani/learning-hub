@@ -97,9 +97,9 @@ await test('authentication consumes lazy touch_login RPC, and a logging failure 
     let consumed=0,reload;const modes=[];
     const hooks={lazy:()=>()=>null,useCallback:f=>(reload=f,f),useEffect:()=>{},useMemo:()=>null,useState:initial=>[typeof initial==='function'?initial():initial,v=>modes.push(v)]};
     const client={auth:{getUser:async()=>({data:{user:{id:'owner'}},error:null})},rpc:name=>({then(resolve){consumed++;return Promise.resolve(name==='parent_pin_status'?{data:{configured:true},error:null}:{error:fails?{message:'temporary'}:null}).then(resolve)}}),from:()=>({select(){return this},eq(){return this},single:async()=>({data:{id:'owner',status:'approved',role:'user'},error:null})})};
-    const gate=load(read('src/AuthGate.tsx'),n=>n==='react'?hooks:n==='react/jsx-runtime'?require(n):n==='./cloud'?{cloudReady:true,supabase:client,readCatalog:async()=>[]}:n==='./games/registry'?{}:{},
+    const gate=load(read('src/AuthGate.tsx'),n=>n==='react'?hooks:n==='react/jsx-runtime'?require(n):n==='./cloud'?{cloudReady:true,supabase:client,readCatalog:async()=>[]}:n==='./games/godMode'?{restoreGodMode:()=>false}:n==='./games/registry'?{}:{},
       {window:{location:{hash:''}},console:{warn:()=>{}}});
-    gate.default();await reload();assert.equal(consumed,2);assert(modes.includes('approved'));assert(!modes.includes('error'));
+    gate.default();await reload();assert.equal(consumed,3);assert(modes.includes('approved'));assert(!modes.includes('error'));
   }
 });
 await test('real Supabase client exposes a 409 conflict without retrying it',async()=>{

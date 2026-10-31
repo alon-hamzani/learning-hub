@@ -1,0 +1,24 @@
+import {PGlite} from '@electric-sql/pglite';import {pgcrypto} from '@electric-sql/pglite/contrib/pgcrypto';import {readFileSync} from 'node:fs';import {randomUUID} from 'node:crypto';import assert from 'node:assert/strict';
+const db=new PGlite({extensions:{pgcrypto}}),read=name=>readFileSync(new URL('../supabase/migrations/'+name,import.meta.url),'utf8');
+await db.exec(`create role anon;create role authenticated;create role service_role;create schema auth;
+create table auth.users(id uuid primary key,email text,email_confirmed_at timestamptz,raw_app_meta_data jsonb,raw_user_meta_data jsonb);
+create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
+create function auth.jwt() returns jsonb language sql stable as $$select jsonb_build_object('session_id',current_setting('request.jwt.session',true))$$;
+grant usage on schema auth to authenticated;grant execute on function auth.uid(),auth.jwt() to authenticated;`);
+for(const name of ['20261030_cloud.sql','20261030_learning_hub.sql','20261030_audit_fixes.sql','20261030_server_privileges.sql','20261030_sync_safety.sql','20261030_admin_summary.sql','20261030_sync_conflict_response.sql'])await db.exec(read(name));
+const owner=randomUUID(),ordinary=randomUUID(),otherAdmin=randomUUID();
+for(const [id,email] of [[owner,'alon.hamzani@gmail.com'],[ordinary,'ordinary@example.invalid'],[otherAdmin,'another-admin@example.invalid']])await db.query(`insert into auth.users values($1,$2,now(),'{"provider":"google"}','{}')`,[id,email]);
+await db.query(`update app_users set status='approved'`);await db.query(`update app_users set role='super_admin' where id=$1`,[otherAdmin]);
+await db.exec(read('20261031_admin_god_mode.sql'));
+const as=async(id,fn)=>{await db.exec('set role authenticated');await db.query(`select set_config('request.jwt.claim.sub',$1,false),set_config('request.jwt.session','test-login',false)`,[id]);try{return await fn();}finally{await db.exec('reset role');}};
+const allowed=async()=>((await db.query('select god_mode_capability() result')).rows[0].result);
+await as(owner,async()=>{assert.equal((await allowed()).allowed,true);await assert.rejects(()=>db.query('select * from private.god_mode_owner'));});
+for(const id of [ordinary,otherAdmin])await as(id,async()=>{const result=await allowed();assert.equal(result.allowed,false);assert.equal(result.session_key,null);await assert.rejects(()=>db.query(`update private.god_mode_owner set owner_id=$1`,[id]));});
+for(const status of ['suspended','pending','rejected']){await db.query('update app_users set status=$1 where id=$2',[status,owner]);await as(owner,async()=>assert.equal((await allowed()).allowed,false));}
+await db.query(`update app_users set status='approved',role='user' where id=$1`,[owner]);await as(owner,async()=>assert.equal((await allowed()).allowed,false));
+await db.query(`update app_users set role='super_admin' where id=$1`,[owner]);
+await as(owner,async()=>{await db.query(`select set_config('request.jwt.session','',false)`);assert.equal((await allowed()).allowed,false);});
+await db.exec('set role anon');await assert.rejects(()=>db.query('select god_mode_capability()'));await db.exec('reset role');
+await as(owner,()=>assert.rejects(()=>db.query(`select save_game_profile('god-mode:multiplication-quest','multiplication-quest',$1,null)`,[{id:'god-mode:multiplication-quest',name:'Test',avatar:'🧪',xp:10000}])));
+assert.equal((await db.query(`select count(*)::integer n from student_profiles where id like 'god-mode:%'`)).rows[0].n,0);
+console.log('PASS God Mode database: pinned verified owner only; other super admin denied; role/status/session revocation; allowlist private and immutable to clients; anon denied; simulated profile persistence rejected.');await db.close();

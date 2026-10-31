@@ -1,10 +1,11 @@
-import {useMemo,useState} from 'react';
+import {useEffect,useMemo,useState} from 'react';
 import NumberPad from './NumberPad';
 import {makeQuestion} from '../game';
 import type {Question} from '../game';
 import type {MiniInteraction} from './BonusAdventure';
-export default function MultiplicationBoard({onRecord,onEvent}:{onRecord:(q:Question,first:boolean,points:number,resolved:boolean)=>void;onEvent:MiniInteraction}) {
+export default function MultiplicationBoard({onRecord,onEvent,onActiveChange}:{onActiveChange?:(active:boolean)=>void;onRecord:(q:Question,first:boolean,points:number,resolved:boolean)=>void;onEvent:MiniInteraction}) {
   const [practice,setPractice]=useState(false),[cell,setCell]=useState<[number,number]>([1,1]),[value,setValue]=useState(''),[solved,setSolved]=useState<Record<string,boolean>>({}),[message,setMessage]=useState(''),[assisted,setAssisted]=useState(false),[wrong,setWrong]=useState(false);
+  useEffect(()=>{onActiveChange?.(practice);return()=>onActiveChange?.(false);},[practice,onActiveChange]);
   const [a,b]=cell,key=`${a}x${b}`;
   const [round,setRound]=useState(0);
   const q=useMemo(()=>makeQuestion(a,b),[a,b,round]);

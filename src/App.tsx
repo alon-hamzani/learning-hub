@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent, ReactNode } from 'react';
 import { ArrowLeft, ArrowRight, BookOpen, Check, CheckCircle2, ChevronLeft, CircleHelp, Delete, Home, LockKeyhole, Menu, Play, Plus, Printer, RotateCcw, Settings, ShieldCheck, Sparkles, Star, Target, Trophy, Volume2, VolumeX, X } from 'lucide-react';
 import {
@@ -7,6 +7,7 @@ import {
   recordSkill, shuffle, skillLevel, totalAttempts, worldCompleted, worldIsUnlocked, canOpenWorld, canStartQuiz,
 } from './game';
 import type { Profile, Question, QuizMode, World } from './game';
+import {createCompletedTestProfile,createSandboxCloud,keepTestCompletion} from './games/godMode';
 import type { GameCloud, CloudEvent } from './cloud';
 import BonusAdventure,{BONUS_GAMES} from './learning/BonusAdventure';
 import type {BonusKind,MiniInteraction} from './learning/BonusAdventure';
@@ -18,7 +19,7 @@ import MultiplicationBoard from './learning/MultiplicationBoard';
 import {sound, speakHebrew, stopAudio} from './learning/audio';
 import './learning/learning.css';
 
-type Page = 'home' | 'map' | 'world' | 'lesson' | 'quiz' | 'games' | 'progress' | 'parents' | 'profiles' | 'table';
+type Page = 'home' | 'map' | 'world' | 'lesson' | 'quiz' | 'games' | 'progress' | 'parents' | 'profiles' | 'table' | 'test-certificate';
 type Session = { runId: string; worldId: number; mode: QuizMode; table?: number; questions: Question[] };
 const byId = (id: number) => WORLDS.find(w => w.id === id) || WORLDS[0];
 const getWorldIndex = (id: number) => WORLDS.findIndex(w => w.id === id);
@@ -28,8 +29,11 @@ const exerciseStageTitle: Record<QuizMode, string> = {
   mixed: 'מסע בין הכפולות', focused: 'חיזוק אישי', rocket: 'מרוץ החלל', tower: 'מגדל הכפל', treasure: 'צייד האוצרות',
 };
 function playBeep(success: boolean, enabled: boolean) { sound(success?'correct':'wrong',enabled); }
-function App({ initialProfiles, cloud }: { initialProfiles: Profile[]; cloud: GameCloud }) {
-  const [profiles, setProfiles] = useState<Profile[]>(initialProfiles);
+const ignoreSessionChange=(_active:boolean)=>{};
+function App({ initialProfiles, cloud:providedCloud,testMode=false,onSessionActiveChange=ignoreSessionChange }: { initialProfiles: Profile[]; cloud: GameCloud;testMode?:boolean;onSessionActiveChange?:(active:boolean)=>void }) {
+  const cloud=useMemo(()=>testMode?createSandboxCloud():providedCloud,[testMode,providedCloud]);
+  const [bonusActive,setBonusActive]=useState(false),[boardActive,setBoardActive]=useState(false),[quizRunning,setQuizRunning]=useState(false);
+  const [profiles, setProfiles] = useState<Profile[]>(()=>testMode?initialProfiles.map(keepTestCompletion):initialProfiles);
   const [activeId, setActiveId] = useState(() => {
     try {
       const previous = localStorage.getItem('learning-hub:active-profile');
@@ -47,24 +51,25 @@ function App({ initialProfiles, cloud }: { initialProfiles: Profile[]; cloud: Ga
   const [notice, setNotice] = useState('');
   const [parentAction,setParentAction]=useState<null|(()=>void)>(null);
   const active = profiles.find(p => p.id === activeId) ?? null;
-  useEffect(() => { cloud.onProfilesChanged(profiles); }, [profiles, cloud]);
-  useEffect(() => { try { localStorage.setItem('learning-hub:active-profile', activeId); } catch { /* optional */ } }, [activeId]);
+  useEffect(() => { if(!testMode)cloud.onProfilesChanged(profiles); }, [profiles, cloud,testMode]);
+  useEffect(() => { if(testMode)return;try { localStorage.setItem('learning-hub:active-profile', activeId); } catch { /* optional */ } }, [activeId,testMode]);
+  useEffect(()=>{onSessionActiveChange((page==='quiz'&&quizRunning)||page==='lesson'||(page==='games'&&bonusActive)||(page==='table'&&boardActive));return()=>onSessionActiveChange(false);},[page,quizRunning,bonusActive,boardActive,onSessionActiveChange]);
   useEffect(()=>{if(page!=='parents')return;const timeout=setTimeout(()=>setPage('home'),5*60*1000);return()=>clearTimeout(timeout);},[page]);
   useEffect(() => { if (!notice) return; const timeout = setTimeout(() => setNotice(''), 4200); return () => clearTimeout(timeout); }, [notice]);
   const updateActive = (fn: (p: Profile) => Profile) => setProfiles(ps => ps.map(p => {
     if (p.id !== activeId) return p;
-    const updated = fn(p);
+    const changed=fn(p);const updated = testMode?keepTestCompletion(changed):changed;
     return { ...updated, earnedBadges: Array.from(new Set([...(updated.earnedBadges || []), ...badgesFor(updated)])) };
   }));
   function createKid(e: FormEvent) {
     e.preventDefault();
     if (!createName.trim()) return;
-    const p = createProfile(createName, createAvatar);
+    const p = testMode?{...createCompletedTestProfile(),id:'god-mode:'+crypto.randomUUID(),name:createName.trim().slice(0,22),avatar:createAvatar}:createProfile(createName, createAvatar);
     cloud.onProfilesChanged([...profiles, p]); cloud.onActivity('profile_created', p.id);
     setProfiles(prev => [...prev, p]); setActiveId(p.id); setCreateName(''); setPage('home');
     setNotice(`איזה כיף, ${p.name}! המסע שלך מתחיל עכשיו 🌟`);
   }
-  function navigate(p: Page) { stopAudio(); if(p==='parents'){setParentAction(()=>()=>setPage('parents'));return;} setPage(p); setMenuOpen(false); window.scrollTo({ top: 0, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth' }); }
+  function navigate(p: Page) { stopAudio(); if(p==='parents'){setParentAction(()=>()=>setPage('parents'));return;} if(p!=='quiz')setQuizRunning(false);setPage(p); setMenuOpen(false); window.scrollTo({ top: 0, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth' }); }
   function checkWorld(id: number) {
     if (active && canOpenWorld(active, id)) return true;
     setNotice('העולם הזה עדיין נעול. משלימים קודם את העולמות הקודמים.'); return false;
@@ -78,7 +83,7 @@ function App({ initialProfiles, cloud }: { initialProfiles: Profile[]; cloud: Ga
     const runId = crypto.randomUUID();
     const questions = makeQuiz(id, mode, active, table, fact);
     cloud.onSessionStart({ id: runId, studentId: active.id, worldId: id, mode, count: questions.length, questions });
-    setWorldId(id); setSession({ runId, worldId: id, mode, table, questions }); navigate('quiz');
+    setQuizRunning(true);setWorldId(id); setSession({ runId, worldId: id, mode, table, questions }); navigate('quiz');
   }
   function completeLesson(id: number) {
     updateActive(p => {
@@ -87,14 +92,14 @@ function App({ initialProfiles, cloud }: { initialProfiles: Profile[]; cloud: Ga
     });
     if(active&&!active.progress[id]?.lesson)sound('reward',active.sound);
     cloud.onActivity('lesson_completed', activeId, { worldId: id });
-    setNotice('סיימת את השיעור! קיבלת 30 כוכבים ⭐'); navigate('world');
+    setNotice(testMode?'תצוגת בדיקה: השיעור הושלם ללא שמירה.':active?.progress[id]?.lesson?'חזרתם על השיעור — ללא בונוס נוסף.':'סיימת את השיעור! קיבלת 30 כוכבים ⭐'); navigate('world');
   }
   function recordAnswer(q: Question, firstTry: boolean, points: number, resolved: boolean) {
     updateActive(p => ({ ...(q.activity==='memory'?p:recordSkill(p, q, firstTry, resolved)), xp: p.xp + points }));
   }
   const miniEvent:MiniInteraction=(q,action,response)=>cloud.onModuleEvent(activeId,'mini_interaction',{question:q,action,response:response??null});
   function completeQuiz(mode: QuizMode, id: number, first: number, total: number) {
-    if (session) cloud.onSessionComplete(session.runId);
+    setQuizRunning(false);if (session) cloud.onSessionComplete(session.runId);
     const threshold = id === 99 ? 90 : 85;
     const passed = percent(first, total) >= threshold;
     if(active)sound(passed?'complete':'tap',active.sound);
@@ -185,7 +190,8 @@ function App({ initialProfiles, cloud }: { initialProfiles: Profile[]; cloud: Ga
       </div>
     </header>
     {notice && <div role="status" className="toast">{notice}</div>}
-    <SyncStatus/><main className="main-container">
+    {testMode?<div className="sync-status">🧪 מצב בדיקה מקומי — ההתקדמות מדומה ואינה נשמרת</div>:<SyncStatus/>}<main className="main-container">
+      {testMode&&<div className="god-test-tools"><label>קפיצה לעולם <select aria-label="קפיצה לעולם לבדיקה" value={worldId} onChange={event=>openWorld(Number(event.target.value))}>{WORLDS.map(world=><option key={world.id} value={world.id}>{world.name}</option>)}</select></label><button className="secondary" onClick={()=>navigate('test-certificate')}>תעודת בדיקה</button></div>}
       {page === 'home' && <>
         <section className="hero">
           <div className="hero-content">
@@ -232,11 +238,12 @@ function App({ initialProfiles, cloud }: { initialProfiles: Profile[]; cloud: Ga
       {page === 'world' && <WorldPage world={byId(worldId)} profile={active} onBack={() => navigate('map')} onLesson={() => startLesson(worldId)} onQuiz={mode => startQuiz(mode, worldId)}/>}
       {page === 'lesson' && <Lesson key={worldId} world={byId(worldId)} name={active.name} onBack={() => navigate('world')} onFinish={() => completeLesson(worldId)}/>}
       {page === 'quiz' && session && <QuizScreen key={session.runId} profile={active} world={byId(session.worldId)} mode={session.mode} questions={session.questions} onInteraction={(event) => cloud.onGameEvent({ ...event, sessionId: session.runId })} onRecord={recordAnswer} onComplete={(first, total) => completeQuiz(session.mode, session.worldId, first, total)} onExit={() => navigate(session.mode === 'checkpoint' || session.mode === 'practice' || session.mode === 'guided' ? 'world' : 'games')} onRetry={() => startQuiz(session.mode, session.worldId, session.table)} onWorld={() => navigate('world')} onNext={()=>{const next=WORLDS[getWorldIndex(session.worldId)+1];if(next&&canOpenWorld(active,next.id))openWorld(next.id);else navigate('progress');}} />}
-      {page === 'games' && <GamesPage onEvent={miniEvent} profile={active} onPlay={(mode, table) => startQuiz(mode, table || currentWorld.id, table)} onRecord={(q, first, points, resolved) => { recordAnswer(q, first, points, resolved); cloud.onActivity('mini_game', active.id, { a: q.a, b: q.b, first, points, resolved }); }}/>}
+      {page === 'games' && <GamesPage onActiveChange={setBonusActive} onEvent={miniEvent} profile={active} onPlay={(mode, table) => startQuiz(mode, table || currentWorld.id, table)} onRecord={(q, first, points, resolved) => { recordAnswer(q, first, points, resolved); cloud.onActivity('mini_game', active.id, { a: q.a, b: q.b, first, points, resolved }); }}/>}
       {page === 'progress' && <ProgressPage profile={active} onWorld={openWorld} onPractice={(n,b) => startQuiz('focused', n, n,b)}/>}
-      {page === 'table' && <MultiplicationBoard onEvent={miniEvent} onRecord={(q,first,points,resolved)=>{recordAnswer(q,first,points,resolved);cloud.onActivity('mini_game',active.id,{a:q.a,b:q.b,first,points,resolved});}}/>}
-      {page === 'parents' && <ParentsPage profile={active} onPractice={n => startQuiz('focused', n, n)} onReset={() => resetKid(active.id, false)}/>}
-      {page === 'profiles' && <section className="profiles-page"><div className="page-title"><div className="eyebrow">משחק לכל אחד</div><h1>מי משחק היום? 🎮</h1><p>לכל ילד או ילדה יש מסע, נקודות והישגים משלהם.</p></div><div className="profile-grid">{profiles.map(p => <div className={`profile-card panel ${p.id === activeId ? 'selected-profile' : ''}`} key={p.id}><div className="profile-large-avatar">{p.avatar}</div><h3>{p.name}</h3><p>⭐ {formatNumber(p.xp)} נקודות · {ordinaryCompletedCount(p)} עולמות</p><button className="primary full" onClick={() => { setActiveId(p.id); navigate('home'); }}>ממשיכים לשחק <ArrowLeft size={16}/></button><div className="profile-controls"><button onClick={() => resetKid(p.id, false)}><RotateCcw size={14}/> התחל מהתחלה</button><button className="danger-text" onClick={() => resetKid(p.id, true)}><Delete size={14}/> מחק פרופיל</button></div></div>)}<div className="profile-card panel new-profile"><div className="new-profile-icon"><Plus size={34}/></div><h3>חבר חדש למסע?</h3><p>אפשר לפתוח פרופיל נוסף בלי לאבד את הישגי האחרים.</p><button className="secondary full" onClick={() => setActiveId('')}>יצירת פרופיל חדש <Plus size={17}/></button></div></div><div className="settings-box panel"><Settings size={21}/><div><h3>הגדרות המשחק</h3><button className="text-link" onClick={()=>setFocusMode(value=>!value)}>{focusMode?'יציאה ממצב ריכוז':'מצב ריכוז: פחות עיטורים ותנועה'}</button><p>ניתן להפעיל או להשתיק צלילי הצלחה במהלך התרגול.</p></div><button className="secondary" onClick={() => {stopAudio();updateActive(p => ({ ...p, sound: !p.sound }));}}>{active.sound ? <Volume2 size={17}/> : <VolumeX size={17}/>} {active.sound ? 'צלילים פועלים' : 'צלילים כבויים'}</button></div></section>}
+      {page === 'table' && <MultiplicationBoard onActiveChange={setBoardActive} onEvent={miniEvent} onRecord={(q,first,points,resolved)=>{recordAnswer(q,first,points,resolved);cloud.onActivity('mini_game',active.id,{a:q.a,b:q.b,first,points,resolved});}}/>}
+      {page === 'test-certificate' && testMode && <Certificate profile={active} testMode/>}
+      {page === 'parents' && <ParentsPage testMode={testMode} profile={active} onPractice={n => startQuiz('focused', n, n)} onReset={() => resetKid(active.id, false)}/>}
+      {page === 'profiles' && <section className="profiles-page"><div className="page-title"><div className="eyebrow">משחק לכל אחד</div><h1>מי משחק היום? 🎮</h1><p>לכל ילד או ילדה יש מסע, נקודות והישגים משלהם.</p></div><div className="profile-grid">{profiles.map(p => <div className={`profile-card panel ${p.id === activeId ? 'selected-profile' : ''}`} key={p.id}><div className="profile-large-avatar">{p.avatar}</div><h3>{p.name}</h3><p>⭐ {formatNumber(p.xp)} נקודות · {ordinaryCompletedCount(p)} עולמות</p><button className="primary full" onClick={() => { setActiveId(p.id); navigate('home'); }}>ממשיכים לשחק <ArrowLeft size={16}/></button><div className="profile-controls"><button disabled={testMode} onClick={() => resetKid(p.id, false)}><RotateCcw size={14}/> התחל מהתחלה</button><button disabled={testMode} className="danger-text" onClick={() => resetKid(p.id, true)}><Delete size={14}/> מחק פרופיל</button></div></div>)}<div className="profile-card panel new-profile"><div className="new-profile-icon"><Plus size={34}/></div><h3>חבר חדש למסע?</h3><p>אפשר לפתוח פרופיל נוסף בלי לאבד את הישגי האחרים.</p><button className="secondary full" onClick={() => setActiveId('')}>יצירת פרופיל חדש <Plus size={17}/></button></div></div><div className="settings-box panel"><Settings size={21}/><div><h3>הגדרות המשחק</h3><button className="text-link" onClick={()=>setFocusMode(value=>!value)}>{focusMode?'יציאה ממצב ריכוז':'מצב ריכוז: פחות עיטורים ותנועה'}</button><p>ניתן להפעיל או להשתיק צלילי הצלחה במהלך התרגול.</p></div><button className="secondary" onClick={() => {stopAudio();updateActive(p => ({ ...p, sound: !p.sound }));}}>{active.sound ? <Volume2 size={17}/> : <VolumeX size={17}/>} {active.sound ? 'צלילים פועלים' : 'צלילים כבויים'}</button></div></section>}
     </main>
     <footer className="footer"><span>✨ מסע הכפל שלי · לומדים באהבה</span><span>שמירה מאובטחת בענן · ללא פרסומות</span></footer>
     <nav className="mobile-bottom-nav" aria-label="ניווט נייד">{navItems.slice(0, 4).map(n => <button key={n.id} className={page === n.id ? 'active' : ''} onClick={() => navigate(n.id)}>{n.icon}<span>{n.label}</span></button>)}</nav>
@@ -348,9 +355,10 @@ function QuizScreen({ profile, world, mode, questions, onRecord, onComplete, onE
     </div><p className="quiz-bottom-note">🌈 מותר לטעות. כשחושבים ומנסים שוב — המוח מתחזק!</p>
   </div>;
 }
-function GamesPage({ profile, onPlay, onRecord,onEvent }: { profile: Profile; onEvent:MiniInteraction; onPlay: (mode: QuizMode, table?: number) => void; onRecord: (q: Question, firstTry: boolean, points: number, resolved: boolean) => void }) {
+function GamesPage({ profile, onPlay, onRecord,onEvent,onActiveChange }: { profile: Profile;onActiveChange:(active:boolean)=>void; onEvent:MiniInteraction; onPlay: (mode: QuizMode, table?: number) => void; onRecord: (q: Question, firstTry: boolean, points: number, resolved: boolean) => void }) {
   const [selected, setSelected] = useState(2);
   const [mini, setMini] = useState<'memory' | 'bingo' | BonusKind | null>(null);
+  useEffect(()=>{onActiveChange(mini!==null);return()=>onActiveChange(false);},[mini,onActiveChange]);
   const unlockedTables = WORLDS.filter((_, i) => i > 0 && i < 11 && worldIsUnlocked(profile, i)).map(w => w.id);
   const table = unlockedTables.includes(selected) ? selected : unlockedTables[0] ?? 1;
   return <><div className="page-title"><div className="eyebrow">ללמוד בדרך הכי כיפית</div><h1>ארקייד הכפל 🎮</h1><p>כל משחק מאמן את המוח בדרך אחרת. בוחרים משחק ויוצאים לדרך!</p></div>
@@ -439,18 +447,21 @@ function ProgressPage({ profile, onWorld, onPractice }: { profile: Profile; onWo
     <div className="section-heading"><h2>העולמות שכבר הכרתי</h2></div><div className="achievement-worlds">{WORLDS.filter(w => w.id !== 99).map(w => <button className="mini-world" key={w.id} disabled={!canOpenWorld(profile,w.id)} onClick={() => onWorld(w.id)}><span>{w.icon}</span><b>{w.short}</b>{!canOpenWorld(profile,w.id) ? <LockKeyhole size={17}/> : worldCompleted(profile, w.id) ? <CheckCircle2 size={17} className="green-check"/> : <span className="mini-world-dash">—</span>}</button>)}</div>
   </>;
 }
-function ParentsPage({ profile, onPractice, onReset }: { profile: Profile; onPractice: (n: number) => void; onReset: () => void }) {
+function ParentsPage({ profile, onPractice, onReset,testMode=false }: { profile: Profile;testMode?:boolean; onPractice: (n: number) => void; onReset: () => void }) {
   const total = totalAttempts(profile), first = firstHitCount(profile);
   const weak = Array.from({ length: 100 }, (_, i) => { const a = Math.floor(i / 10) + 1, b = i % 10 + 1; return { a, b, s: profile.skills[pairKey(a, b)] }; }).filter(x => x.s && skillLevel(x.s) !== 'mastered').sort((a, b) => ((b.s!.wrong * 2) - b.s!.firstCorrect) - ((a.s!.wrong * 2) - a.s!.firstCorrect)).slice(0, 8);
   const mastery = masteryCount(profile);
-  const isChampion = badgesFor(profile).includes('champion');
   return <><div className="page-title"><div className="eyebrow">מבט להורים</div><h1>איך מתקדמים בלמידה? 📊</h1><p>נתוני התרגול וההתקדמות של {profile.name}, השמורים בענן בחשבון המשפחתי.</p></div>
     <section className="stat-grid"><Stat icon="🧮" value={formatNumber(total)} label="תרגילים שהושלמו" color="lavender"/><Stat icon="🎯" value={`${percent(first, total)}%`} label="דיוק בניסיון ראשון" color="mint"/><Stat icon="🗺️" value={`${ordinaryCompletedCount(profile)}/11`} label="עולמות לימוד" color="sky"/><Stat icon="🏆" value={`${mastery}/100`} label="צירופים בשליטה" color="peach"/></section>
     <div className="parent-columns"><section className="panel"><div className="panel-head"><div><div className="eyebrow">מיקוד חכם</div><h2>מה כדאי לחזק?</h2></div><Target size={26} color="#7756d9"/></div>{weak.length ? <div className="weak-list">{weak.map(x => <button key={`${x.a}x${x.b}`} onClick={() => onPractice(x.a)}><span dir="ltr">{x.a} × {x.b} = {x.a * x.b}</span><span>תרגול <ArrowLeft size={15}/></span></button>)}</div> : <p className="empty-state">עוד לא הצטבר מספיק מידע. התחילו לשחק כדי לראות המלצות ממוקדות.</p>}</section>
       <section className="panel"><div className="panel-head"><div><div className="eyebrow">תרגולים אחרונים</div><h2>יומן ההתקדמות</h2></div><BookOpen size={25} color="#7756d9"/></div>{profile.activity.length ? <div className="activity-list">{profile.activity.slice(0, 7).map((a, i) => <div key={`${a.when}_${i}`}><div><b>{a.label}</b><span>{byId(a.worldId).short} · {new Date(a.when).toLocaleDateString('he-IL')}</span></div><strong>{percent(a.correct, a.total)}%</strong></div>)}</div> : <p className="empty-state">לאחר השלמת תרגול ראשון יוצג כאן סיכום קצר.</p>}</section></div>
     <section className="panel parent-notes"><div><h2>💡 איך נקבעת שליטה אמיתית?</h2><p>כל צירוף (למשל 7×8) נחשב לנלמד היטב לאחר לפחות שתי הצלחות בניסיון ראשון, בשני ימים שונים וברצף הצלחות חיובי. סיום המבחן האחרון דורש גם דיוק של 90% לפחות וגם שליטה בכל 100 הצירופים. אפשר להגיע לשם במספר מפגשים, בלי לחץ זמן.</p></div><div className="note-bubble">🧠</div></section>
-    <section className={`panel certificate ${isChampion ? 'has-certificate' : 'locked-certificate'}`}><div className="certificate-star">🏆</div><div className="eyebrow">תעודת הוקרה מיוחדת</div><h2>תעודת אלוף הכפל</h2><p className="certificate-name">מוענקת באהבה ל־{profile.name}</p><p>{isChampion ? 'על שליטה בכל לוח הכפל מ־1 עד 10!' : 'התעודה תיפתח אחרי שליטה בכל 100 הצירופים והצלחה במבחן אלופי הכפל.'}</p>{isChampion && <><p>{new Date().toLocaleDateString('he-IL')}</p><button className="primary print-certificate" onClick={() => window.print()}><Printer size={17}/> הדפסת התעודה</button></>}</section>
-    <div className="settings-box panel"><Settings size={20}/><div><h3>איפוס התקדמות</h3><p>אפשר למחוק את כל הנקודות, המדליות וההתקדמות של הילד ולהתחיל מהתחלה.</p></div><button className="outline danger-text" onClick={onReset}><RotateCcw size={17}/> התחלה מחדש</button></div>
+    <Certificate profile={profile} testMode={testMode}/>
+    <div className="settings-box panel"><Settings size={20}/><div><h3>איפוס התקדמות</h3><p>אפשר למחוק את כל הנקודות, המדליות וההתקדמות של הילד ולהתחיל מהתחלה.</p></div><button disabled={testMode} className="outline danger-text" onClick={onReset}><RotateCcw size={17}/> התחלה מחדש</button></div>
   </>;
+}
+function Certificate({profile,testMode=false}:{profile:Profile;testMode?:boolean}){
+  const isChampion=badgesFor(profile).includes('champion');
+  return (<section className={`panel certificate ${isChampion ? 'has-certificate' : 'locked-certificate'}`}>{testMode&&<p className="god-certificate-watermark">🧪 תעודת בדיקה בלבד — נתונים מדומים</p>}<div className="certificate-star">🏆</div><div className="eyebrow">תעודת הוקרה מיוחדת</div><h2>תעודת אלוף הכפל</h2><p className="certificate-name">מוענקת באהבה ל־{profile.name}</p><p>{isChampion ? 'על שליטה בכל לוח הכפל מ־1 עד 10!' : 'התעודה תיפתח אחרי שליטה בכל 100 הצירופים והצלחה במבחן אלופי הכפל.'}</p>{isChampion && <><p>{new Date().toLocaleDateString('he-IL')}</p><button className="primary print-certificate" onClick={() => window.print()}><Printer size={17}/> הדפסת התעודה</button></>}</section>);
 }
 export default App;

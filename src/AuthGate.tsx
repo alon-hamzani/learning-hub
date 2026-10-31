@@ -1,10 +1,12 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowRight, BookOpen, LogIn, LogOut, RefreshCw, Shield, ShieldAlert, Sparkles } from 'lucide-react';
 import LearningHub from './LearningHub';
-import { cloudReady, createGameCloud, readCatalog, readStudentProfiles, supabase } from './cloud';
+import { cloudReady, createGameCloud, readCatalog, readStudentProfiles, resumeLearningWrites, supabase } from './cloud';
 import type { AppUser, CatalogGame } from './cloud';
 import type { Profile } from './game';
-import { registeredModules, moduleInstalled } from './games/registry';
+import {createSandboxCloud,restoreGodMode,rememberGodMode} from './games/godMode';
+import type {GodCapability} from './games/godMode';
+import { registeredModules, moduleInstalled,gameTestProfiles,registeredTestModes } from './games/registry';
 import './cloud.css';
 import './hub.css';
 import './learning/learning.css';
@@ -23,6 +25,13 @@ export default function AuthGate() {
   const [route, setRouteState] = useState(currentRoute);
   const [students, setStudents] = useState<Profile[]|null>(null);
   const [activeGameId, setActiveGameId] = useState<string|null>(null);
+  const [loadedOwner,setLoadedOwner]=useState<string|null>(null);
+  const [loadedGodMode,setLoadedGodMode]=useState<boolean|null>(null);
+  const [godMode,setGodMode]=useState(false);
+  const [godCapability,setGodCapability]=useState<GodCapability>({allowed:false,session_key:null});
+  const [switchingGod,setSwitchingGod]=useState(false);
+  const [gameActivity,setGameActivity]=useState(false);
+  const [godError,setGodError]=useState('');
   const [busy, setBusy] = useState(false);
   const [errorText, setErrorText] = useState('');
   const [syncError, setSyncError] = useState('');
@@ -33,7 +42,7 @@ export default function AuthGate() {
     if (!cloudReady) { setMode('error'); setErrorText('יש להגדיר משתני Supabase ב־README_HUB.md.'); return; }
     try {
       const { data: auth, error } = await supabase.auth.getUser();
-      if (error || !auth.user) { setMode('logged_out'); setMe(null); setGames([]); setStudents(null); return; }
+      if (error || !auth.user) { setGodMode(false);setGodCapability({allowed:false,session_key:null});setMode('logged_out'); setMe(null); setGames([]); setStudents(null); return; }
       const { error: loginError } = await supabase.rpc('touch_login');
       if (loginError) console.warn('לא ניתן לעדכן את מועד ההתחברות:', loginError.message);
       const { data, error: profileError } = await supabase.from('app_users').select('*').eq('id',auth.user.id).single();
@@ -46,12 +55,16 @@ export default function AuthGate() {
         const {data:pinStatus,error:pinError}=await supabase.rpc('parent_pin_status');
         if(pinError)throw pinError;
         setPinConfigured(Boolean(pinStatus?.configured));
+        const {data:capability,error:capabilityError}=await supabase.rpc('god_mode_capability');
+        const verified:GodCapability=!capabilityError&&capability?.allowed===true&&typeof capability.session_key==='string'
+          ?capability:{allowed:false,session_key:null};
+        setGodCapability(verified);setGodMode(restoreGodMode(account.id,verified));
         setMode('approved');
       } else {
-        setMode(account.status); setGames([]); setStudents(null);
+        setGodMode(false);setGodCapability({allowed:false,session_key:null});setMode(account.status); setGames([]); setStudents(null);
         if (account.status === 'pending') void supabase.functions.invoke('notify-approval').catch(() => undefined);
       }
-    } catch (err) { setMode('error'); setErrorText(err instanceof Error ? err.message : String(err)); }
+    } catch (err) { setGodMode(false);setGodCapability({allowed:false,session_key:null});setMode('error'); setErrorText(err instanceof Error ? err.message : String(err)); }
   }, []);
   useEffect(() => {
     void reload();
@@ -66,18 +79,38 @@ export default function AuthGate() {
   const routeGameId = route.startsWith('games/') ? route.slice('games/'.length) : null;
   const selectedGame = games.find(g => g.id === routeGameId && (g.active || me?.role === 'super_admin') && moduleInstalled(g.module_key));
   useEffect(() => {
-    if (mode !== 'approved' || !me || !selectedGame) { setActiveGameId(null); setStudents(null); return; }
-    if (selectedGame.id === activeGameId) return;
-    let alive = true;
-    setStudents(null);
-    readStudentProfiles(me.id,selectedGame.id).then(profiles => {
-      if (alive) { setStudents(profiles); setActiveGameId(selectedGame.id); }
-    }).catch(err => { if (alive) { setSyncError(err instanceof Error ? err.message : String(err)); setRoute('home'); } });
-    return () => { alive = false; };
-  }, [mode, me?.id, selectedGame?.id, activeGameId]);
-  const cloud = useMemo(() => (me?.status === 'approved' && activeGameId)
-    ? createGameCloud(me.id, activeGameId, setSyncError, students || []) : null, [me?.id, me?.status, activeGameId, students]);
-  useEffect(()=>{if(mode==='approved'&&me&&route==='home')void readStudentProfiles(me.id,'multiplication-quest').then(setFamily).catch(()=>setFamily([]));},[mode,me?.id,route]);
+    if (mode!=='approved'||!me||!selectedGame){setActiveGameId(null);setStudents(null);setLoadedOwner(null);setLoadedGodMode(null);return;}
+    if(selectedGame.id===activeGameId&&loadedOwner===me.id&&loadedGodMode===godMode)return;
+    let alive=true;setStudents(null);
+    const loaded=(profiles:Profile[])=>{if(alive){setStudents(profiles);setActiveGameId(selectedGame.id);setLoadedOwner(me.id);setLoadedGodMode(godMode);}};
+    if(godMode)loaded(gameTestProfiles(selectedGame.module_key)??[]);
+    else readStudentProfiles(me.id,selectedGame.id).then(loaded).catch(err=>{if(alive){setSyncError(err instanceof Error?err.message:String(err));setRoute('home');}});
+    return()=>{alive=false;};
+  },[mode,me?.id,selectedGame?.id,activeGameId,loadedOwner,loadedGodMode,godMode]);
+  const cloud=useMemo(()=>(me?.status==='approved'&&activeGameId&&students&&loadedOwner===me.id&&loadedGodMode===godMode)
+    ?godMode?createSandboxCloud():createGameCloud(me.id,activeGameId,setSyncError,students):null,
+    [me?.id,me?.status,activeGameId,students,loadedOwner,loadedGodMode,godMode]);
+  useEffect(()=>{
+    if(mode!=='approved'||!me||route!=='home')return;
+    if(godMode){setFamily(gameTestProfiles('multiplication-quest')??[]);return;}
+    let alive=true;void readStudentProfiles(me.id,'multiplication-quest').then(profiles=>{if(alive)setFamily(profiles);}).catch(()=>{if(alive)setFamily([]);});
+    return()=>{alive=false;};
+  },[mode,me?.id,route,godMode]);
+  async function toggleGodMode(){
+    if(!me||switchingGod)return;
+    if(gameActivity){setGodError('סיימו או צאו מהפעילות הנוכחית לפני החלפת מצב הבדיקה.');return;}
+    setSwitchingGod(true);setGodError('');
+    try{
+      if(godMode){rememberGodMode(me.id,godCapability,false);setStudents(null);setActiveGameId(null);setLoadedGodMode(null);setLoadedOwner(null);setGameActivity(false);setGodMode(false);return;}
+      const {data:capability,error}=await supabase.rpc('god_mode_capability');
+      if(error||!capability?.allowed||!capability.session_key)throw Error('מצב הבדיקה זמין רק לבעל החשבון המורשה.');
+      if(cloud)await cloud.flush();
+      await resumeLearningWrites(me.id);
+      const next=!godMode;rememberGodMode(me.id,capability,next);setGodCapability(capability);
+      setStudents(null);setActiveGameId(null);setLoadedGodMode(null);setLoadedOwner(null);setGameActivity(false);setGodMode(next);
+    }catch(error){setGodError(error instanceof Error?error.message:'לא ניתן להחליף מצב כרגע. השלימו את השמירה ונסו שוב.');}
+    finally{setSwitchingGod(false);}
+  }
   async function login() {
     setBusy(true); setErrorText('');
     const { error } = await supabase.auth.signInWithOAuth({
@@ -95,6 +128,7 @@ export default function AuthGate() {
   }
   async function logout() {
     if (cloud) await cloud.flush();
+    if(me)rememberGodMode(me.id,godCapability,false);setGodMode(false);setGodCapability({allowed:false,session_key:null});
     setPinConfigured(null);await supabase.auth.signOut(); setMe(null); setMode('logged_out'); setGames([]);
     setStudents(null); setActiveGameId(null); setRoute('home');
   }
@@ -104,21 +138,25 @@ export default function AuthGate() {
     if(!pinConfigured)return <ParentGate setup onDone={()=>setPinConfigured(true)}/>;
     const admin = me.role === 'super_admin';
     const showAdmin = route === 'admin' && admin;
+    const testSupported=selectedGame&&moduleInstalled(selectedGame.module_key)&&Boolean(registeredTestModes[selectedGame.module_key]);
     const Component = selectedGame && moduleInstalled(selectedGame.module_key)
       ? registeredModules[selectedGame.module_key] : null;
     return <div className="cloud-app-shell">
       <div className="cloud-toolbar hub-toolbar" dir="rtl"><button className="hub-brand" onClick={() => void goHome()}><BookOpen size={21}/> מרכז הלמידה</button>
-        <div><span className="hub-username">☁️ {me.full_name || me.email}</span>
+        <div>{godCapability.allowed&&<button type="button" role="switch" aria-checked={godMode} aria-label="God Mode — מצב בדיקה" disabled={switchingGod} onClick={()=>void toggleGodMode()}>{switchingGod?'מחליפים מצב…':godMode?'🧪 God Mode פעיל':'🧪 הפעלת God Mode'}</button>}<span className="hub-username">☁️ {me.full_name || me.email}</span>
           {selectedGame && <button onClick={() => void goHome()}><ArrowRight size={17}/> לכל המשחקים</button>}
           {admin && <button onClick={() => void goAdmin()}><Shield size={16}/> {showAdmin ? 'ספריית המשחקים':'ממשק ניהול'}</button>}
-          <button onClick={logout}><LogOut size={16}/> יציאה</button>
+          <button onClick={logout} disabled={switchingGod}><LogOut size={16}/> יציאה</button>
         </div>
       </div>
+      {godMode&&<div className="god-mode-banner" role="status"><strong>🧪 God Mode פעיל — נתוני בדיקה בלבד</strong><span>כל התוכן פתוח. נקודות והתקדמות אינן נשמרות בענן.</span></div>}
+      {godError&&<div className="cloud-error" role="alert">{godError}<button onClick={()=>setGodError('')}>סגירה</button></div>}
       {syncError && <div className="cloud-error" role="alert">לא ניתן לסנכרן נתונים: {syncError} <button onClick={() => window.location.reload()}>רענון נתונים מהענן</button> <button onClick={()=>setRecovery(true)}>טיפול בשמירה ממתינה</button> <button onClick={() => setSyncError('')}>סגור</button></div>}
-      <Suspense fallback={<main className="hub-loading" dir="rtl">טוענים…</main>}>
+      <div inert={switchingGod} aria-busy={switchingGod}><Suspense fallback={<main className="hub-loading" dir="rtl">טוענים…</main>}>
       {showAdmin ? <Admin /> : selectedGame && Component ?
-        activeGameId === selectedGame.id && students && cloud ?
-          <Component key={`${me.id}:${selectedGame.id}`} initialProfiles={students} cloud={cloud}/>
+        godMode&&!testSupported?<main className="hub-empty" dir="rtl"><h2>המשחק עדיין אינו תומך במצב בדיקה</h2><p>כבו God Mode כדי להיכנס במצב רגיל.</p></main>:
+        activeGameId === selectedGame.id && students && cloud && loadedOwner===me.id && loadedGodMode===godMode ?
+          <Component key={`${me.id}:${selectedGame.id}:${godMode?'test':'normal'}`} initialProfiles={students} cloud={cloud} testMode={godMode} onSessionActiveChange={setGameActivity}/>
           : <main className="hub-loading" dir="rtl">טוענים את ההתקדמות האישית…</main>
         : routeGameId ? <main className="hub-empty hub-missing" dir="rtl">
           <ShieldAlert size={33}/><h2>אין גישה למשחק המבוקש</h2>
@@ -126,7 +164,7 @@ export default function AuthGate() {
           <button onClick={() => setRoute('home')}>חזרה לספריית המשחקים</button>
         </main> : <LearningHub profiles={family} games={games} displayName={me.full_name || me.email} isAdmin={admin}
           openGame={g => setRoute(`games/${g.id}`)}/>}
-      </Suspense>
+      </Suspense></div>
     </div>;
   }
   return <main className="cloud-auth" dir="rtl"><section className="cloud-auth-card">

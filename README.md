@@ -30,9 +30,14 @@ Apply migrations once, in the following order (not alphabetically). For an exist
 10. `20261031_learning_sync.sql`
 11. `20261031_learning_order.sql`
 12. `20261031_legacy_milestones.sql`
+13. `20261031_admin_god_mode.sql`
 
 Deploy the matching Edge Functions as well as the frontend. The account owner chooses a four-digit PIN at first approved login; there is no email verification. Existing completed-stage bonuses are reserved by the legacy-milestones migration so they cannot be awarded twice.
 
 `npm test` runs mathematical, PostgreSQL/pgcrypto, access-control, offline and Edge Function regression checks. The visual test pages in `tests/` use synthetic data and are excluded from the production Vite entry point.
 
 הפרויקט לא כולל מפתחות גישה. ללא הגדרות אמיתיות לא תתאפשר התחברות או שמירה. GitHub Pages דורש Workflow מתיקיית `.github`, לא פרסום Vite מה־root.
+
+### Owner-only God Mode
+
+The verified Google super-admin owner can toggle God Mode in the global toolbar. The migration pins that exact existing account; another super admin does not qualify. All installed game content opens using a completed synthetic profile. Answers retain normal correctness feedback, but no progress, points, events or offline operations are saved. Exit the current activity before toggling. Switching off restores real profiles and the existing child selection. The preference is per tab and expires with the login session. Parent PIN and actual administration permissions remain unchanged. New games must explicitly register a test adapter or are unavailable in this mode.
