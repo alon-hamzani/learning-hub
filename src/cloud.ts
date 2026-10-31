@@ -61,7 +61,7 @@ export function createGameCloud(ownerId:string,gameId:string,onFailure:(message:
   const put=(kind:string,payload:Record<string,unknown>)=>{try{return box.enqueue(kind,{...payload,gameId});}catch(error){onFailure(error instanceof Error?error.message:String(error));throw error;}};
   return {
     flush:()=>box.drain(),
-    onProfilesChanged(profiles){for(const profile of profiles){if(deleted.has(profile.id)||saved.get(profile.id)===content(profile))continue;const revision=revisions.get(profile.id)??null;put('profile',{snapshot:profile,revision,studentId:profile.id});revisions.set(profile.id,Number(revision??0)+1);saved.set(profile.id,content(profile));}},
+    onProfilesChanged(profiles){for(const profile of profiles){if(deleted.has(profile.id)||saved.get(profile.id)===content(profile))continue;const revision=revisions.get(profile.id)??null;try{put('profile',{snapshot:profile,revision,studentId:profile.id});}catch{return;}revisions.set(profile.id,Number(revision??0)+1);saved.set(profile.id,content(profile));}},
     async deleteProfile(id){deleted.add(id);try{await box.drain();if(box.pending())throw Error('יש להשלים סנכרון לפני מחיקה.');const {error}=await supabase.rpc('delete_student_profile',{p_student_id:id});if(error)throw error;saved.delete(id);revisions.delete(id);}catch(error){deleted.delete(id);throw error;}},
     async resetProfile(id){await box.drain();if(box.pending())throw Error('יש להשלים סנכרון לפני איפוס.');const {error}=await supabase.rpc('reset_game_profile',{p_student_id:id,p_game_id:gameId});if(error)throw error;revisions.set(id,(revisions.get(id)??0)+1);saved.delete(id);},
     onModuleEvent(studentId,eventKind,payload){put('module',{studentId,eventKind,payload});},
