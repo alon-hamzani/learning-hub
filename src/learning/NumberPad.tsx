@@ -1,0 +1,3 @@
+export default function NumberPad({value,onChange,onSubmit,disabled=false}:{value:string;onChange:(value:string)=>void;onSubmit:()=>void;disabled?:boolean}) {
+  return <div className="number-pad" aria-label="לוח מספרים"><output aria-live="polite" dir="ltr">{value || '?'}</output><div className="number-pad-keys">{['1','2','3','4','5','6','7','8','9','⌫','0','✓'].map(key=><button type="button" key={key} disabled={disabled || (key==='✓'&&!value)} aria-label={key==='⌫'?'מחיקת ספרה':key==='✓'?'בדיקת תשובה':key} onClick={()=>key==='✓'?onSubmit():onChange(key==='⌫'?value.slice(0,-1):(value+key).slice(0,3))}>{key}</button>)}</div></div>;
+}
