@@ -60,4 +60,17 @@ await check('bonus games record real wrong attempts before a corrected answer',(
  assert.equal(result.score,0);assert.equal(result.wrong_answers,1);assert.equal(result.hints_used,1);
  assert.equal((await db.query(`select sum(points)::integer total from learning_rewards`)).rows[0].total,3);
 }));
+await check('repeating a legacy completed stage cannot re-award its old bonus',async()=>{
+ const legacy={...profile,id:'legacy-child',progress:{1:{lesson:true,guided:true}}};
+ await as(owner,()=>operation('profile',{snapshot:legacy,revision:null}));
+ await db.query(`insert into learning_rewards(owner_id,student_id,game_id,reward_key,points) values($1,'legacy-child','multiplication-quest','baseline',30)`,[owner]);
+ const migration=readFileSync(new URL('../supabase/migrations/20261031_legacy_milestones.sql',import.meta.url),'utf8');
+ await db.exec(migration);await db.exec(migration);
+ await as(owner,async()=>{
+  await operation('run',{run:{id:'legacy-repeat',studentId:legacy.id,worldId:1,mode:'guided',count:1,questions:[{uid:'legacy-q',a:1,b:4,type:'number'}]}});
+  await operation('answer',{sessionId:'legacy-repeat',question:{uid:'legacy-q'},action:'answer',response:'4'});
+  await operation('finish',{sessionId:'legacy-repeat'});
+  assert.equal((await db.query(`select sum(points)::integer total from learning_rewards where student_id='legacy-child'`)).rows[0].total,40);
+ });
+});
 console.log(`${passed} learning-v4 database checks passed`);await db.close();
