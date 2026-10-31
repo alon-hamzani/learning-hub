@@ -175,7 +175,7 @@ function App({ initialProfiles, cloud }: { initialProfiles: Profile[]; cloud: Ga
   return <div className={`app ${focusMode?'focus-mode':''}`}>
     <header className="topbar">
       <div className="topbar-inner">
-        <button className="logo-button" onClick={() => navigate('home')} aria-label="מסע הכפל שלי - מסך הבית"><span className="logo-mark">✦</span><span>מסע הכפל <b>שלי!</b></span></button>
+        <button className="logo-button" onClick={() => navigate('home')} aria-label="מסע הכפל שלי - מסך הבית"><span className="logo-mark">📒</span><span>מסע הכפל <b>שלי!</b></span></button>
         <nav className={`main-nav ${menuOpen ? 'expanded' : ''}`} aria-label="ניווט ראשי">{navItems.map(n => <button key={n.id} className={`nav-link ${page === n.id || ((page === 'world' || page === 'lesson' || page === 'quiz') && n.id === 'map') ? 'active' : ''}`} onClick={() => navigate(n.id)}>{n.icon}<span>{n.label}</span></button>)}</nav>
         <div className="top-actions"><button className="text-link" aria-label={active.sound?'השתקת צלילים':'הפעלת צלילים'} onClick={()=>{stopAudio();updateActive(p=>({...p,sound:!p.sound}));}}>{active.sound?<Volume2 size={21}/>:<VolumeX size={21}/>}</button>
           <div className="top-points" title="הנקודות שצברת"><Star size={17} fill="#f9bb42" stroke="#f9bb42"/><b>{formatNumber(active.xp)}</b></div>
@@ -194,7 +194,7 @@ function App({ initialProfiles, cloud }: { initialProfiles: Profile[]; cloud: Ga
             <p>כל תרגיל הוא עוד צעד בדרך להפוך לאלופי הכפל. יש לך את זה!</p>
             <button className="primary hero-action" onClick={() => openWorld(currentWorld.id)}>ממשיכים במסע <ArrowLeft size={20}/></button>
           </div>
-          <div className="hero-illustration" aria-hidden="true"><span className="float f1">✦</span><span className="float f2">✳</span><div className="hero-star">⭐</div><div className="hero-mascot">{active.avatar}</div><span className="float f3">✦</span><div className="hero-calc">3 × 4 = 12</div></div>
+          <div className="hero-illustration" aria-hidden="true"><span className="float f1">✦</span><span className="float f2">✳</span><div className="hero-star">📒</div><div className="hero-mascot">{active.avatar}</div><span className="float f3">✦</span><div className="hero-calc">3 × 4 = 12</div></div>
         </section>
         <section className="stat-grid" aria-label="ההתקדמות שלי">
           <Stat icon="⭐" value={formatNumber(active.xp)} label="הכוכבים שלי" color="peach"/>
