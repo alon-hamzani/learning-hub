@@ -1,3 +1,5 @@
+import {accountOutbox} from './learning/outbox';
+import type {Operation} from './learning/outbox';
 import { createClient } from '@supabase/supabase-js';
 import { createProfile } from './game';
 import type { Profile, Question, QuizMode } from './game';
@@ -25,134 +27,52 @@ export async function readCatalog(): Promise<CatalogGame[]> {
   return data as CatalogGame[];
 }
 export type CloudEvent = { sessionId: string; question: Question; action: 'answer' | 'hint' | 'reveal'; response?: string };
-export type CloudGameStart = { id: string; studentId: string; worldId: number; mode: QuizMode; count: number };
+export type CloudGameStart = { id: string; studentId: string; worldId: number; mode: QuizMode; count: number; questions?:Question[] };
 export interface GameCloud {
   onProfilesChanged: (profiles: Profile[]) => void;
   deleteProfile: (id: string) => Promise<void>;
+  resetProfile: (id: string) => Promise<void>;
   onModuleEvent: (studentId: string, eventKind: string, payload?: Record<string,unknown>) => void;
   onSessionStart: (run: CloudGameStart) => void;
   onGameEvent: (event: CloudEvent) => void;
   onSessionComplete: (id: string) => void;
   onActivity: (kind: 'lesson_completed' | 'profile_created' | 'profile_reset' | 'profile_deleted' | 'mini_game', studentId?: string, meta?: Record<string, unknown>) => void;
 }
-export function createGameCloud(ownerId: string, gameId: string, onFailure: (message: string) => void, initialProfiles: Profile[] = []): GameCloud & { flush: () => Promise<void> } {
-  let chain = Promise.resolve();
-  // Ordered writes: session creation precedes answers; answers precede finalization.
-  const append = (job: () => Promise<void>) => {
-    chain = chain.catch(() => undefined).then(async () => {
-      try { await job(); } catch (err) { onFailure(err && typeof err === 'object' && 'message' in err ? String(err.message) : String(err)); }
-    });
-  };
-  const content = (p: Profile) => { const { _revision, ...snapshot } = p; return JSON.stringify(snapshot); };
-  const revisions = new Map(initialProfiles.map(p => [p.id, p._revision ?? null]));
-  const saved = new Map(initialProfiles.map(p => [p.id, content(p)]));
-  const conflicted = new Set<string>();
-  const deleted = new Set<string>();
-  let latestRequest = '';
-  const api: GameCloud & { flush: () => Promise<void> } = {
-    flush: () => chain,
-    onProfilesChanged(profiles) {
-      const current = JSON.stringify(profiles);
-      if (current === latestRequest) return;
-      latestRequest = current;
-      // Freeze the request, so later mutations cannot alter an already queued save.
-      const requested = profiles.map(p => JSON.parse(content(p)) as Profile);
-      append(async () => {
-        try {
-          let failure: unknown;
-          for (const p of requested) {
-            if (deleted.has(p.id)) continue;
-            try {
-            if (saved.get(p.id) === content(p)) continue;
-            if (conflicted.has(p.id)) throw new Error('ההתקדמות השתנתה במכשיר אחר. יש לרענן את הדף לפני שממשיכים.');
-            const { data, error } = await supabase.rpc('save_game_profile', {
-              p_student_id: p.id, p_game_id: gameId, p_snapshot: p,
-              p_expected_revision: revisions.get(p.id) ?? null,
-            });
-            if (error) {
-              if (error.code === 'PT409' || error.code === '40001') {
-                conflicted.add(p.id);
-                throw new Error('ההתקדמות השתנתה במכשיר אחר. יש לרענן את הדף לפני שממשיכים.');
-              }
-              throw error;
-            }
-            revisions.set(p.id, Number(data)); saved.set(p.id, content(p));
-            } catch (error) { failure ??= error; }
-          }
-          if (failure) throw failure;
-        } catch (error) {
-          if (latestRequest === current) latestRequest = '';
-          throw error;
-        }
-      });
-    },
-    async deleteProfile(id) {
-      let failure: unknown;
-      append(async () => {
-        try {
-        const { error } = await supabase.rpc('delete_student_profile', { p_student_id: id });
-        if (error) throw error;
-        deleted.add(id);
-        saved.delete(id); revisions.delete(id); conflicted.delete(id); latestRequest = '';
-        } catch (error) { failure = error; throw error; }
-      });
-      await chain;
-      if (failure) throw failure;
-    },
-    onModuleEvent(studentId,eventKind,payload) {
-      append(async () => {
-        const { error } = await supabase.from('game_events').insert({
-          owner_id:ownerId, student_id:studentId, game_id:gameId,
-          event_kind:eventKind.slice(0,70), payload:payload||{},
-        });
-        if (error) throw error;
-      });
-    },
-    onSessionStart(run) {
-      append(async () => {
-        const { error } = await supabase.from('game_sessions').insert({
-          id: run.id, owner_id: ownerId, student_id: run.studentId, world_id: run.worldId,
-          mode: run.mode, question_count: run.count, game_id: gameId,
-        });
-        if (error) throw error;
-      });
-    },
-    onGameEvent(event) {
-      append(async () => {
-        const q = event.question;
-        const missing_side = q.type === 'missing' ? (q.prompt.trim().startsWith('?') ? 'left' : 'right') : null;
-        // Derive the correct answer inside PostgreSQL (generated column), not in the client.
-        const { error } = await supabase.from('question_attempts').insert({
-          session_id: event.sessionId, owner_id: ownerId,
-          student_id: currentStudentBySession.get(event.sessionId),
-          question_uid: q.uid, a: q.a, b: q.b, kind: q.type, shown_result: q.shownResult ?? null,
-          missing_side, action: event.action, response: event.response ?? null,
-        });
-        if (error) throw error;
-      });
-    },
-    onSessionComplete(sessionId) {
-      append(async () => {
-        const { error } = await supabase.rpc('finalize_game', { p_session_id: sessionId });
-        if (error) throw error;
-        currentStudentBySession.delete(sessionId);
-      });
-    },
-    onActivity(kind, studentId, meta) {
-      append(async () => {
-        const { error } = await supabase.from('activity_events').insert({
-          owner_id: ownerId, student_id: studentId ?? null, event_type: kind, game_id: gameId, payload: meta || {},
-        });
-        if (error) throw error;
-      });
-    },
-  };
-  const start = api.onSessionStart;
-  api.onSessionStart = (run) => { currentStudentBySession.set(run.id, run.studentId); start(run); };
-  return api;
+function learningTransport(ownerId:string) { return async(operation:Operation)=>{
+    const {data:auth}=await supabase.auth.getSession();
+    if(auth.session?.user.id!==ownerId)throw Error('יש להתחבר לחשבון המשפחתי כדי להשלים את השמירה.');
+    const {data,error}=await supabase.rpc('sync_learning_operation',{p_operation_id:operation.id,p_kind:operation.kind,p_payload:operation.payload});
+    if(error)throw error;return data;
+  }; }
+export async function resumeLearningWrites(ownerId:string) {
+  const box=accountOutbox(ownerId,learningTransport(ownerId),()=>undefined);
+  await box.drain();
+  if(box.pending())throw Error('יש פעולות שמירה ממתינות במכשיר. יש להשלים את הסנכרון לפני טעינה מחדש.');
 }
-const currentStudentBySession = new Map<string, string>();
+export function createGameCloud(ownerId:string,gameId:string,onFailure:(message:string)=>void,initialProfiles:Profile[]=[]):GameCloud & {flush:()=>Promise<void>} {
+  const transport=learningTransport(ownerId);
+  const box=accountOutbox(ownerId,transport,onFailure);
+  const revisions=new Map(initialProfiles.map(p=>[p.id,p._revision??null]));
+  const content=(p:Profile)=>{const {_revision,...rest}=p;return JSON.stringify(rest);};
+  const saved=new Map(initialProfiles.map(p=>[p.id,content(p)]));
+  const deleted=new Set<string>();
+  const sessionStudents=new Map<string,string>();
+  for(const queued of box.snapshots(gameId)) {const snapshot=queued.snapshot as Profile;revisions.set(snapshot.id,Number(queued.revision??0)+1);saved.set(snapshot.id,content(snapshot));}
+  const put=(kind:string,payload:Record<string,unknown>)=>{try{return box.enqueue(kind,{...payload,gameId});}catch(error){onFailure(error instanceof Error?error.message:String(error));throw error;}};
+  return {
+    flush:()=>box.drain(),
+    onProfilesChanged(profiles){for(const profile of profiles){if(deleted.has(profile.id)||saved.get(profile.id)===content(profile))continue;const revision=revisions.get(profile.id)??null;put('profile',{snapshot:profile,revision,studentId:profile.id});revisions.set(profile.id,Number(revision??0)+1);saved.set(profile.id,content(profile));}},
+    async deleteProfile(id){deleted.add(id);try{await box.drain();if(box.pending())throw Error('יש להשלים סנכרון לפני מחיקה.');const {error}=await supabase.rpc('delete_student_profile',{p_student_id:id});if(error)throw error;saved.delete(id);revisions.delete(id);}catch(error){deleted.delete(id);throw error;}},
+    async resetProfile(id){await box.drain();if(box.pending())throw Error('יש להשלים סנכרון לפני איפוס.');const {error}=await supabase.rpc('reset_game_profile',{p_student_id:id,p_game_id:gameId});if(error)throw error;revisions.set(id,(revisions.get(id)??0)+1);saved.delete(id);},
+    onModuleEvent(studentId,eventKind,payload){put('module',{studentId,eventKind,payload});},
+    onSessionStart(run){sessionStudents.set(run.id,run.studentId);put('run',{run,studentId:run.studentId});},
+    onGameEvent(event){put('answer',{studentId:sessionStudents.get(event.sessionId),sessionId:event.sessionId,question:event.question,action:event.action,response:event.response??null});},
+    onSessionComplete(id){put('finish',{studentId:sessionStudents.get(id),sessionId:id});},
+    onActivity(kind,studentId,meta){put('activity',{kind,studentId,meta:meta??{}});},
+  };
+}
 export async function readStudentProfiles(ownerId: string, gameId: string): Promise<Profile[]> {
+  await resumeLearningWrites(ownerId);
   const { data: kids, error: kidError } = await supabase.from('student_profiles')
     .select('id,name,avatar').eq('owner_id',ownerId).order('created_at');
   if (kidError) throw kidError;
