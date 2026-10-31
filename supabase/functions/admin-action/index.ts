@@ -36,6 +36,11 @@ Deno.serve(async (req) => {
     if (!target) return response(404,{error:'User not found'});
     if (target.role==='super_admin' || targetId === auth.user.id) return response(403,{error:'Cannot modify administrator'});
     if (action === 'delete') {
+      const publicKey = JSON.parse(Deno.env.get('SUPABASE_PUBLISHABLE_KEYS') || '{}').default || Deno.env.get('SUPABASE_ANON_KEY');
+      if (!publicKey) return response(500,{error:'Public client configuration unavailable'});
+      const caller = createClient(Deno.env.get('SUPABASE_URL')!,publicKey,{global:{headers:{Authorization:`Bearer ${token}`}},auth:{persistSession:false,autoRefreshToken:false}});
+      const {data:parentOk,error:parentError}=await caller.rpc('parent_authorized');
+      if(parentError || !parentOk)return response(403,{error:'יש להזין PIN הורי לפני מחיקת חשבון.'});
       // Audited BEFORE cascade deletion; audit target reference becomes null afterwards.
       const { error: auditErr } = await server.from('admin_audit').insert({admin_user_id:auth.user.id,target_user_id:targetId,action:'delete_user',metadata:{deletion_requested:true}});
       if (auditErr) throw auditErr;
