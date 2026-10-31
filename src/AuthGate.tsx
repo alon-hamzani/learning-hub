@@ -130,7 +130,7 @@ export default function AuthGate() {
     </div>;
   }
   return <main className="cloud-auth" dir="rtl"><section className="cloud-auth-card">
-    <div className="cloud-auth-icon">{mode === 'pending' ? '⏳' : mode === 'suspended' || mode === 'rejected' ? '🔒':'🌟'}</div>
+    <div className="cloud-auth-icon">{mode === 'pending' ? '⏳' : mode === 'suspended' || mode === 'rejected' ? '🔒':'📚'}</div>
     <h1>{mode==='logged_out'?'ברוכים הבאים למרכז המשחקים והלמידה':'מרכז המשחקים והלמידה'}</h1>
     {mode === 'loading' && <p>בודקים התחברות והרשאות…</p>}
     {mode === 'logged_out' && <><p>בואו לגלות עולם קסום של למידה, משחקים ואתגרים! לומדים, מתרגלים, צוברים ידע ומשתפרים בכל שלב – כי הדרך להיות הכי טובים מתחילה בליהנות מהדרך! 🚀✨</p><button className="cloud-primary" onClick={login} disabled={busy}><LogIn size={20}/> התחברות באמצעות Google</button></>}
