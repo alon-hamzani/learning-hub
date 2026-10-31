@@ -5,6 +5,7 @@ import type { CatalogGame, UserGamePermission } from './cloud';
 import AdminGames, { UserGamePermissions } from './AdminGames';
 import type { AppUser, AccessStatus } from './cloud';
 import { readAllPages } from './pagination';
+import ParentGate from './learning/ParentGate';
 import { edgeErrorMessage } from './edgeErrors';
 
 type Dashboard = { users:number; approved:number; pending:number; games:number; active7:number; active30:number; finished:number; average:number;
@@ -37,6 +38,7 @@ export default function Admin() {
   const [selected, setSelected] = useState<string | null>(null), [session, setSession] = useState<string | null>(null);
   const [from, setFrom] = useState(''), [to, setTo] = useState(''), [kind, setKind] = useState('all');
   const [gameFilter, setGameFilter] = useState('all');
+  const [deleteTarget,setDeleteTarget]=useState<AppUser|null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [summary,setSummary]=useState<Dashboard>(emptyDashboard);
   const [userPage,setUserPage]=useState(0),[sessionPage,setSessionPage]=useState(0);
@@ -68,7 +70,7 @@ export default function Admin() {
     void readAllPages<AttemptRow>((from,to)=>supabase.from('question_attempts').select('id,session_id,question_uid,a,b,kind,action,response,correct,created_at')
       .eq('session_id',session).order('created_at').order('id').range(from,to))
       .then(data=>{if(alive)setAttempts(data)}).catch(error=>{if(alive)setError(error.message)});
-    return ()=>{alive=false};
+  return ()=>{alive=false};
   }, [session]);
   async function changeStatus(user: AppUser, action: 'approve' | 'reject' | 'suspend' | 'restore' | 'delete') {
     const label = { approve:'לאשר', reject:'לדחות', suspend:'להשעות', restore:'להחזיר גישה', delete:'למחוק לצמיתות' }[action];
@@ -88,6 +90,7 @@ export default function Admin() {
     && (!from || s.started_at.slice(0, 10) >= from)
     && (!to || s.started_at.slice(0, 10) <= to));
   const filteredAttempts = useMemo(() => attempts.filter(a => (!from || a.created_at.slice(0,10)>=from) && (!to || a.created_at.slice(0,10)<=to)), [attempts,from,to]);
+    if(deleteTarget)return <ParentGate title="אישור מחיקת חשבון" onDone={()=>{const target=deleteTarget;setDeleteTarget(null);void changeStatus(target,'delete');}} onCancel={()=>setDeleteTarget(null)}/>;
   return <main className="admin-wrap" dir="rtl">
     <div className="admin-heading"><div><div className="eyebrow">Back Office · Super Admin</div><h1>מרכז הניהול 🛡️</h1><p>משתמשים, הרשאות, תרגולים ובקרה בענן</p></div><button className="secondary" onClick={refresh} disabled={busy}><RefreshCw size={17}/> רענון נתונים</button></div>
     {error && <div className="cloud-error" role="alert">{error}</div>}
@@ -119,7 +122,7 @@ export default function Admin() {
           {selectedUser.status === 'pending' && <button onClick={() => changeStatus(selectedUser,'reject')}>דחייה</button>}
           {selectedUser.status === 'approved' && <button onClick={() => changeStatus(selectedUser,'suspend')}>השעיה</button>}
           {selectedUser.status === 'suspended' && <button onClick={() => changeStatus(selectedUser,'restore')}>החזרת גישה</button>}
-          <button className="admin-danger" onClick={() => changeStatus(selectedUser,'delete')}>מחיקת חשבון ונתונים</button>
+          <button className="admin-danger" onClick={() => setDeleteTarget(selectedUser)}>מחיקת חשבון ונתונים</button>
         </>}
       </div>
       <UserGamePermissions user={selectedUser} games={games} grants={grants} refresh={refresh}/>

@@ -1,14 +1,14 @@
 {
   "name": "learning-hub",
   "private": true,
-  "version": "3.0.0",
+  "version": "4.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "typecheck": "tsc --noEmit",
-    "test": "node tests/verify.mjs && node tests/verify-hub.mjs && node tests/audit-db.mjs && node tests/audit-extra.mjs && node tests/sync-regression.mjs && node tests/edge-functions.mjs"
+    "test": "node tests/verify.mjs && node tests/verify-hub.mjs && node tests/audit-db.mjs && node tests/audit-extra.mjs && node tests/sync-regression.mjs && node tests/edge-functions.mjs && node tests/learning-v4.mjs && node tests/offline-v4.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.0",

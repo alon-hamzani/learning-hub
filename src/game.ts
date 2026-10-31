@@ -12,6 +12,7 @@ export type Profile = {
   activity: RecordAttempt[]; earnedBadges: string[]; dailyDate?: string;
 };
 export type Question = {
+  activity?:string;
   uid: string; a: number; b: number; key: string; type: QuestionType;
   prompt: string; correctAnswer: string; options?: string[];
   hint: string; moreHint: string; explanation: string; shownResult?: number;
@@ -30,7 +31,7 @@ export const WORLDS: World[] = [
   { id: 9, name: 'קסם התשע', short: 'כפולות 9', subtitle: 'מגלים טריק מבריק', icon: '🪄', shade: 'violet', method: 'כדי לכפול ב־9 אפשר לכפול ב־10 ואז להפחית פעם אחת את המספר.', example: '9 × 7 = 70 − 7 = 63' },
   { id: 99, name: 'אקדמיית האלופים', short: 'אתגר הסיום', subtitle: 'כל לוח הכפל מעורבב!', icon: '🏆', shade: 'yellow', method: 'עכשיו מחברים את כל מה שלמדנו ומתרגלים מכל הלוח.', example: 'כל הכפולות יחד!' },
 ];
-export const AVATARS = ['🦊', '🦁', '🐼', '🐬', '🐸', '🦄', '🐨', '🐯'];
+export const AVATARS = ['🦊', '🦁', '🐼', '🐬', '🐸', '🦄', '🐨', '🐯', '🐱', '🐶', '🐰', '🐻', '🐧', '🦉', '🐢', '🐙'];
 export const BADGES = [
   { id: 'first', icon: '🌟', name: 'כוכב ראשון', detail: 'פתרת את התרגיל הראשון' },
   { id: 'hundred', icon: '💯', name: 'מאה נקודות', detail: 'צברת 100 נקודות' },
@@ -165,7 +166,7 @@ export function makeQuestion(a: number, b: number, type: QuestionType = 'number'
   if (type === 'visual') return { ...base, type, prompt: `כמה נקודות יש ב־${a} הקבוצות?`, correctAnswer: String(answer), hint, moreHint, explanation };
   return { ...base, type: 'number', prompt: `${a} × ${b} = ?`, correctAnswer: String(answer), hint, moreHint, explanation };
 }
-export function makeQuiz(worldId: number, mode: QuizMode, profile: Profile, selectedTable?: number): Question[] {
+export function makeQuiz(worldId: number, mode: QuizMode, profile: Profile, selectedTable?: number,selectedFactor?:number): Question[] {
   const lengths: Record<QuizMode, number> = { guided: 8, practice: 24, checkpoint: 20, daily: 12, mixed: 30, focused: 20, rocket: 12, tower: 12, treasure: 12 };
   const types: QuestionType[] = mode === 'guided' ? ['visual', 'choice', 'number', 'visual', 'missing', 'choice', 'number', 'story']
     : mode === 'checkpoint' || mode === 'mixed' ? ['number', 'missing', 'choice', 'truefalse', 'story']
@@ -182,7 +183,7 @@ export function makeQuiz(worldId: number, mode: QuizMode, profile: Profile, sele
   } else {
     const adjustedWorld = selectedTable && selectedTable > 0 && mode !== 'mixed' ? selectedTable : worldId;
     for (let i = 0; i < length; i++) {
-      const fact = pickFact(adjustedWorld, profile, mode, i, previous);
+      const fact: [number,number] = mode==='focused'&&selectedFactor&&i%2===0?[adjustedWorld,selectedFactor]:pickFact(adjustedWorld, profile, mode, i, previous);
       facts.push(fact);
       previous.push(pairKey(...fact));
     }

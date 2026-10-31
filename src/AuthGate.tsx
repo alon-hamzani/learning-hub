@@ -7,6 +7,9 @@ import type { Profile } from './game';
 import { registeredModules, moduleInstalled } from './games/registry';
 import './cloud.css';
 import './hub.css';
+import './learning/learning.css';
+import SyncRecovery from './learning/SyncRecovery';
+import ParentGate from './learning/ParentGate';
 const Admin = lazy(() => import('./Admin'));
 
 type AuthMode = 'loading'|'logged_out'|'pending'|'rejected'|'suspended'|'approved'|'error';
@@ -23,6 +26,9 @@ export default function AuthGate() {
   const [busy, setBusy] = useState(false);
   const [errorText, setErrorText] = useState('');
   const [syncError, setSyncError] = useState('');
+  const [pinConfigured,setPinConfigured]=useState<boolean|null>(null);
+  const [recovery,setRecovery]=useState(false);
+  const [family,setFamily]=useState<Profile[]>([]);
   const reload = useCallback(async () => {
     if (!cloudReady) { setMode('error'); setErrorText('יש להגדיר משתני Supabase ב־README_HUB.md.'); return; }
     try {
@@ -37,6 +43,9 @@ export default function AuthGate() {
       if (account.status === 'approved') {
         const assigned = await readCatalog();
         setGames(assigned);
+        const {data:pinStatus,error:pinError}=await supabase.rpc('parent_pin_status');
+        if(pinError)throw pinError;
+        setPinConfigured(Boolean(pinStatus?.configured));
         setMode('approved');
       } else {
         setMode(account.status); setGames([]); setStudents(null);
@@ -50,8 +59,9 @@ export default function AuthGate() {
     const poll = window.setInterval(() => { void reload(); }, 30000);
     const focus = () => { void reload(); };
     const hashChanged = () => setRouteState(currentRoute());
+    window.addEventListener('online',focus);
     window.addEventListener('focus',focus); window.addEventListener('hashchange',hashChanged);
-    return () => { subscription.unsubscribe(); window.clearInterval(poll); window.removeEventListener('focus',focus); window.removeEventListener('hashchange',hashChanged); };
+    return () => { window.removeEventListener('online',focus); subscription.unsubscribe(); window.clearInterval(poll); window.removeEventListener('focus',focus); window.removeEventListener('hashchange',hashChanged); };
   }, [reload]);
   const routeGameId = route.startsWith('games/') ? route.slice('games/'.length) : null;
   const selectedGame = games.find(g => g.id === routeGameId && (g.active || me?.role === 'super_admin') && moduleInstalled(g.module_key));
@@ -67,6 +77,7 @@ export default function AuthGate() {
   }, [mode, me?.id, selectedGame?.id, activeGameId]);
   const cloud = useMemo(() => (me?.status === 'approved' && activeGameId)
     ? createGameCloud(me.id, activeGameId, setSyncError, students || []) : null, [me?.id, me?.status, activeGameId, students]);
+  useEffect(()=>{if(mode==='approved'&&me&&route==='home')void readStudentProfiles(me.id,'multiplication-quest').then(setFamily).catch(()=>setFamily([]));},[mode,me?.id,route]);
   async function login() {
     setBusy(true); setErrorText('');
     const { error } = await supabase.auth.signInWithOAuth({
@@ -84,10 +95,13 @@ export default function AuthGate() {
   }
   async function logout() {
     if (cloud) await cloud.flush();
-    await supabase.auth.signOut(); setMe(null); setMode('logged_out'); setGames([]);
+    setPinConfigured(null);await supabase.auth.signOut(); setMe(null); setMode('logged_out'); setGames([]);
     setStudents(null); setActiveGameId(null); setRoute('home');
   }
   if (mode === 'approved' && me) {
+    if(recovery)return <SyncRecovery owner={me.id} onClose={()=>setRecovery(false)}/>;
+    if(pinConfigured===null)return <main className="hub-loading">טוענים הגדרות משפחתיות…</main>;
+    if(!pinConfigured)return <ParentGate setup onDone={()=>setPinConfigured(true)}/>;
     const admin = me.role === 'super_admin';
     const showAdmin = route === 'admin' && admin;
     const Component = selectedGame && moduleInstalled(selectedGame.module_key)
@@ -100,7 +114,7 @@ export default function AuthGate() {
           <button onClick={logout}><LogOut size={16}/> יציאה</button>
         </div>
       </div>
-      {syncError && <div className="cloud-error" role="alert">לא ניתן לסנכרן נתונים: {syncError} <button onClick={() => window.location.reload()}>רענון נתונים מהענן</button> <button onClick={() => setSyncError('')}>סגור</button></div>}
+      {syncError && <div className="cloud-error" role="alert">לא ניתן לסנכרן נתונים: {syncError} <button onClick={() => window.location.reload()}>רענון נתונים מהענן</button> <button onClick={()=>setRecovery(true)}>טיפול בשמירה ממתינה</button> <button onClick={() => setSyncError('')}>סגור</button></div>}
       <Suspense fallback={<main className="hub-loading" dir="rtl">טוענים…</main>}>
       {showAdmin ? <Admin /> : selectedGame && Component ?
         activeGameId === selectedGame.id && students && cloud ?
@@ -110,21 +124,22 @@ export default function AuthGate() {
           <ShieldAlert size={33}/><h2>אין גישה למשחק המבוקש</h2>
           <p>ייתכן שההרשאה הוסרה או שהמשחק אינו פעיל.</p>
           <button onClick={() => setRoute('home')}>חזרה לספריית המשחקים</button>
-        </main> : <LearningHub games={games} displayName={me.full_name || me.email} isAdmin={admin}
+        </main> : <LearningHub profiles={family} games={games} displayName={me.full_name || me.email} isAdmin={admin}
           openGame={g => setRoute(`games/${g.id}`)}/>}
       </Suspense>
     </div>;
   }
   return <main className="cloud-auth" dir="rtl"><section className="cloud-auth-card">
     <div className="cloud-auth-icon">{mode === 'pending' ? '⏳' : mode === 'suspended' || mode === 'rejected' ? '🔒':'🌟'}</div>
-    <h1>מרכז המשחקים והלמידה</h1>
+    <h1>{mode==='logged_out'?'ברוכים הבאים למרכז המשחקים והלמידה':'מרכז המשחקים והלמידה'}</h1>
     {mode === 'loading' && <p>בודקים התחברות והרשאות…</p>}
-    {mode === 'logged_out' && <><p>משחקים, אתגרים ותרגול אישי – עם שמירה בענן. הכניסה באמצעות Google ובאישור מנהל הפלטפורמה.</p><button className="cloud-primary" onClick={login} disabled={busy}><LogIn size={20}/> התחברות באמצעות Google</button></>}
+    {mode === 'logged_out' && <><p>בואו לגלות עולם קסום של למידה, משחקים ואתגרים! לומדים, מתרגלים, צוברים ידע ומשתפרים בכל שלב – כי הדרך להיות הכי טובים מתחילה בליהנות מהדרך! 🚀✨</p><button className="cloud-primary" onClick={login} disabled={busy}><LogIn size={20}/> התחברות באמצעות Google</button></>}
     {mode === 'pending' && <><h2>הבקשה התקבלה!</h2><p>{me?.full_name || me?.email}, החשבון ממתין לאישור מנהל המערכת.</p><button onClick={() => void reload()}><RefreshCw size={16}/> בדיקה חוזרת</button><button onClick={logout}>יציאה</button></>}
-    {mode === 'rejected' && <><ShieldAlert/><p>בקשת הגישה נדחתה. אפשר לפנות למנהל הפלטפורמה.</p><button onClick={logout}>יציאה</button></>}
-    {mode === 'suspended' && <><ShieldAlert/><p>הגישה לחשבון הושעתה. פנו למנהל הפלטפורמה.</p><button onClick={logout}>יציאה</button></>}
+    {mode === 'rejected' && <><ShieldAlert/><p>בקשת הגישה נדחתה. אפשר לפנות ל<a href="mailto:alon.hamzani@gmail.com">מנהל הפלטפורמה</a>.</p><button onClick={logout}>יציאה</button></>}
+    {mode === 'suspended' && <><ShieldAlert/><p>הגישה לחשבון הושעתה. פנו ל<a href="mailto:alon.hamzani@gmail.com">מנהל הפלטפורמה</a>.</p><button onClick={logout}>יציאה</button></>}
     {mode === 'error' && <><p>לא ניתן לטעון את החשבון כרגע.</p><button onClick={() => void reload()}>ניסיון נוסף</button></>}
     {errorText && <p className="cloud-error" role="alert">{errorText}</p>}
     <small><Sparkles size={14}/> תכנים לימודיים לילדים · ההורה מתחבר באמצעות חשבונו</small>
+    <footer className="brand-footer">© 2026 מגה טק – עולם של למידה ומשחק | תכנים לימודיים אינטראקטיביים לילדים. כל הזכויות שמורות.<br/><a href="mailto:alon.hamzani@gmail.com">צור קשר</a></footer>
   </section></main>;
 }
