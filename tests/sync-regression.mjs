@@ -16,7 +16,11 @@ const base={...game.createProfile('QA','🦊'),id:'child-a',_revision:1};
 function fixture(initial=[base]) {
   const rows=new Map(initial.map(p=>[p.id,{revision:p._revision,snapshot:structuredClone(p)}]));
   const calls=[],errors=[];let fail=false,networkFailure=false;
-  const client={from(){throw Error('Profile writes must use guarded RPCs')},async rpc(name,data){
+  const client={auth:{async getSession(){return {data:{session:{user:{id:'owner'}}}}}},from(){throw Error('Profile writes must use guarded RPCs')},async rpc(name,data){
+    if(name==='sync_learning_operation'){
+      if(data.p_kind!=='profile')throw Error('Unexpected operation');
+      const payload=data.p_payload;name='save_game_profile';data={p_student_id:payload.snapshot.id,p_snapshot:payload.snapshot,p_expected_revision:payload.revision};
+    }
     calls.push({name,data:structuredClone(data)});
     if(networkFailure)throw Error('Network unavailable');
     if(fail){fail=false;return {error:{message:'Temporary failure'}}}
@@ -26,7 +30,9 @@ function fixture(initial=[base]) {
     const revision=(previous?.revision||0)+1;rows.set(data.p_student_id,{revision,snapshot:data.p_snapshot});return {data:revision,error:null};
   }};
   const source=read('src/cloud.ts').replace(/import\.meta\.env\.VITE_SUPABASE_URL/g,"'https://example.invalid'").replace(/import\.meta\.env\.VITE_SUPABASE_PUBLISHABLE_KEY/g,"'public-test'");
-  const cloud=load(source,n=>n==='@supabase/supabase-js'?{createClient:()=>client}:game);
+  const memory=new Map(), storage={get length(){return memory.size;},key:index=>[...memory.keys()][index]??null,removeItem:key=>memory.delete(key),getItem:key=>memory.get(key)??null,setItem:(key,value)=>memory.set(key,value)};
+  const outbox=load(read('src/learning/outbox.ts'),()=>{}, {localStorage:storage,window:{addEventListener(){},dispatchEvent(){}},navigator:{onLine:true},CustomEvent,crypto,structuredClone});
+  const cloud=load(source,n=>n==='@supabase/supabase-js'?{createClient:()=>client}:n.includes('outbox')?outbox:game,{structuredClone});
   return {rows,calls,errors,fail:()=>{fail=true},offline:()=>{networkFailure=true},cloud:cloud.createGameCloud('owner','multiplication-quest',m=>errors.push(m),initial)};
 }
 await test('stale list never deletes a child created on another device',async()=>{
@@ -89,10 +95,10 @@ await test('authentication consumes lazy touch_login RPC, and a logging failure 
   for(const fails of [false,true]) {
     let consumed=0,reload;const modes=[];
     const hooks={lazy:()=>()=>null,useCallback:f=>(reload=f,f),useEffect:()=>{},useMemo:()=>null,useState:initial=>[typeof initial==='function'?initial():initial,v=>modes.push(v)]};
-    const client={auth:{getUser:async()=>({data:{user:{id:'owner'}},error:null})},rpc:()=>({then(resolve){consumed++;return Promise.resolve({error:fails?{message:'temporary'}:null}).then(resolve)}}),from:()=>({select(){return this},eq(){return this},single:async()=>({data:{id:'owner',status:'approved',role:'user'},error:null})})};
+    const client={auth:{getUser:async()=>({data:{user:{id:'owner'}},error:null})},rpc:name=>({then(resolve){consumed++;return Promise.resolve(name==='parent_pin_status'?{data:{configured:true},error:null}:{error:fails?{message:'temporary'}:null}).then(resolve)}}),from:()=>({select(){return this},eq(){return this},single:async()=>({data:{id:'owner',status:'approved',role:'user'},error:null})})};
     const gate=load(read('src/AuthGate.tsx'),n=>n==='react'?hooks:n==='react/jsx-runtime'?require(n):n==='./cloud'?{cloudReady:true,supabase:client,readCatalog:async()=>[]}:n==='./games/registry'?{}:{},
       {window:{location:{hash:''}},console:{warn:()=>{}}});
-    gate.default();await reload();assert.equal(consumed,1);assert(modes.includes('approved'));assert(!modes.includes('error'));
+    gate.default();await reload();assert.equal(consumed,2);assert(modes.includes('approved'));assert(!modes.includes('error'));
   }
 });
 await test('real Supabase client exposes a 409 conflict without retrying it',async()=>{
