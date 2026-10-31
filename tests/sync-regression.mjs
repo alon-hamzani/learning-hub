@@ -15,7 +15,7 @@ async function test(name,fn){try{await fn();results.push({name,result:'PASS'})}c
 const base={...game.createProfile('QA','🦊'),id:'child-a',_revision:1};
 function fixture(initial=[base]) {
   const rows=new Map(initial.map(p=>[p.id,{revision:p._revision,snapshot:structuredClone(p)}]));
-  const calls=[],errors=[];let fail=false,networkFailure=false;
+  const calls=[],errors=[];let fail=false,networkFailure=false,storageFailure=false;
   const client={auth:{async getSession(){return {data:{session:{user:{id:'owner'}}}}}},from(){throw Error('Profile writes must use guarded RPCs')},async rpc(name,data){
     if(name==='sync_learning_operation'){
       if(data.p_kind!=='profile')throw Error('Unexpected operation');
@@ -30,10 +30,10 @@ function fixture(initial=[base]) {
     const revision=(previous?.revision||0)+1;rows.set(data.p_student_id,{revision,snapshot:data.p_snapshot});return {data:revision,error:null};
   }};
   const source=read('src/cloud.ts').replace(/import\.meta\.env\.VITE_SUPABASE_URL/g,"'https://example.invalid'").replace(/import\.meta\.env\.VITE_SUPABASE_PUBLISHABLE_KEY/g,"'public-test'");
-  const memory=new Map(), storage={get length(){return memory.size;},key:index=>[...memory.keys()][index]??null,removeItem:key=>memory.delete(key),getItem:key=>memory.get(key)??null,setItem:(key,value)=>memory.set(key,value)};
+  const memory=new Map(), storage={get length(){return memory.size;},key:index=>[...memory.keys()][index]??null,removeItem:key=>memory.delete(key),getItem:key=>memory.get(key)??null,setItem:(key,value)=>{if(storageFailure)throw Error('storage full');memory.set(key,value)}};
   const outbox=load(read('src/learning/outbox.ts'),()=>{}, {localStorage:storage,window:{addEventListener(){},dispatchEvent(){}},navigator:{onLine:true},CustomEvent,crypto,structuredClone});
   const cloud=load(source,n=>n==='@supabase/supabase-js'?{createClient:()=>client}:n.includes('outbox')?outbox:game,{structuredClone});
-  return {rows,calls,errors,fail:()=>{fail=true},offline:()=>{networkFailure=true},cloud:cloud.createGameCloud('owner','multiplication-quest',m=>errors.push(m),initial)};
+  return {rows,calls,errors,fail:()=>{fail=true},offline:()=>{networkFailure=true},fullStorage:()=>{storageFailure=true},cloud:cloud.createGameCloud('owner','multiplication-quest',m=>errors.push(m),initial)};
 }
 await test('stale list never deletes a child created on another device',async()=>{
   const f=fixture();f.rows.set('child-b',{revision:1,snapshot:{name:'Other child'}});
@@ -57,6 +57,7 @@ await test('revision conflict cannot overwrite newer progress even on subsequent
 await test('delete requires the explicit delete API and retains unrelated profiles',async()=>{
   const f=fixture();f.rows.set('other',{revision:1});await f.cloud.deleteProfile(base.id);assert(!f.rows.has(base.id));assert(f.rows.has('other'));
 });
+await test('storage exhaustion is reported without crashing the profile effect',async()=>{const f=fixture();f.fullStorage();assert.doesNotThrow(()=>f.cloud.onProfilesChanged([{...base,xp:20}]));assert(f.errors[0].includes('מקום'));assert.equal(f.calls.length,0);});
 await test('unchanged initial data creates no write',async()=>{const f=fixture();f.cloud.onProfilesChanged([base]);await f.cloud.flush();assert.equal(f.calls.length,0)});
 await test('a conflict in one child does not block another child saving',async()=>{
   const b={...base,id:'child-b'},f=fixture([base,b]);f.rows.set(base.id,{revision:2,snapshot:{xp:100}});
