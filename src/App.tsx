@@ -237,7 +237,7 @@ function App({ initialProfiles, cloud:providedCloud,testMode=false,onSessionActi
       </>}
       {page === 'world' && <WorldPage world={byId(worldId)} profile={active} onBack={() => navigate('map')} onLesson={() => startLesson(worldId)} onQuiz={mode => startQuiz(mode, worldId)}/>}
       {page === 'lesson' && <Lesson key={worldId} world={byId(worldId)} name={active.name} onBack={() => navigate('world')} onFinish={() => completeLesson(worldId)}/>}
-      {page === 'quiz' && session && <QuizScreen key={session.runId} profile={active} world={byId(session.worldId)} mode={session.mode} questions={session.questions} onInteraction={(event) => cloud.onGameEvent({ ...event, sessionId: session.runId })} onRecord={recordAnswer} onComplete={(first, total) => completeQuiz(session.mode, session.worldId, first, total)} onExit={() => navigate(session.mode === 'checkpoint' || session.mode === 'practice' || session.mode === 'guided' ? 'world' : 'games')} onRetry={() => startQuiz(session.mode, session.worldId, session.table)} onWorld={() => navigate('world')} onNext={()=>{const next=WORLDS[getWorldIndex(session.worldId)+1];if(next&&canOpenWorld(active,next.id))openWorld(next.id);else navigate('progress');}} />}
+      {page === 'quiz' && session && <QuizScreen testMode={testMode} key={session.runId} profile={active} world={byId(session.worldId)} mode={session.mode} questions={session.questions} onInteraction={(event) => cloud.onGameEvent({ ...event, sessionId: session.runId })} onRecord={recordAnswer} onComplete={(first, total) => completeQuiz(session.mode, session.worldId, first, total)} onExit={() => navigate(session.mode === 'checkpoint' || session.mode === 'practice' || session.mode === 'guided' ? 'world' : 'games')} onRetry={() => startQuiz(session.mode, session.worldId, session.table)} onWorld={() => navigate('world')} onNext={()=>{const next=WORLDS[getWorldIndex(session.worldId)+1];if(next&&canOpenWorld(active,next.id))openWorld(next.id);else navigate('progress');}} />}
       {page === 'games' && <GamesPage onActiveChange={setBonusActive} onEvent={miniEvent} profile={active} onPlay={(mode, table) => startQuiz(mode, table || currentWorld.id, table)} onRecord={(q, first, points, resolved) => { recordAnswer(q, first, points, resolved); cloud.onActivity('mini_game', active.id, { a: q.a, b: q.b, first, points, resolved }); }}/>}
       {page === 'progress' && <ProgressPage profile={active} onWorld={openWorld} onPractice={(n,b) => startQuiz('focused', n, n,b)}/>}
       {page === 'table' && <MultiplicationBoard onActiveChange={setBoardActive} onEvent={miniEvent} onRecord={(q,first,points,resolved)=>{recordAnswer(q,first,points,resolved);cloud.onActivity('mini_game',active.id,{a:q.a,b:q.b,first,points,resolved});}}/>}
@@ -281,10 +281,10 @@ function DotGroups({ groups, perGroup, dense = false }: { groups: number; perGro
     {Array.from({ length: groups }, (_, i) => <div className="dot-group" key={i}>{Array.from({ length: perGroup }, (_, j) => <span className="math-dot" key={j}/>)}</div>)}
   </div>;
 }
-function QuizScreen({ profile, world, mode, questions, onRecord, onComplete, onExit, onRetry, onWorld, onNext, onInteraction }: {
+function QuizScreen({ testMode=false, profile, world, mode, questions, onRecord, onComplete, onExit, onRetry, onWorld, onNext, onInteraction }: {
   profile: Profile; world: World; mode: QuizMode; questions: Question[];
   onRecord: (q: Question, firstTry: boolean, points: number, resolved: boolean) => void;
-  onComplete: (first: number, total: number) => void; onExit: () => void; onRetry: () => void; onWorld: () => void; onNext:()=>void;
+  testMode?:boolean; onComplete: (first: number, total: number) => void; onExit: () => void; onRetry: () => void; onWorld: () => void; onNext:()=>void;
   onInteraction: (event: Omit<CloudEvent, 'sessionId'>) => void;
 }) {
   const [idx, setIdx] = useState(0);
@@ -337,7 +337,7 @@ function QuizScreen({ profile, world, mode, questions, onRecord, onComplete, onE
       <div className="summary-actions">{isTest&&passed&&(!final||certificated)&&<button className="primary" onClick={onNext}>{final?'המסע שלי וההישגים':'ממשיכים לעולם הבא!'}</button>}<button className="outline" onClick={onRetry}><RotateCcw size={17}/> משחקים שוב</button><button className="primary" onClick={onWorld}>בחזרה לעולם <ArrowLeft size={17}/></button></div>
     </div>;
   }
-  return <div className="quiz-layout"><div className="quiz-header"><button className="back-link" onClick={() => { if (window.confirm('לצאת מהתרגול? הנקודות שכבר צברת יישמרו, אבל הסבב לא ייחשב כהושלם.')) onExit(); }}><ArrowRight size={18}/> יציאה מהתרגול</button><div className="quiz-header-badge">{mode === 'rocket' ? '🚀' : mode === 'tower' ? '🏗️' : mode === 'treasure' ? '🗝️' : '🎯'} {exerciseStageTitle[mode]}</div></div>
+  return <div className="quiz-layout"><div className="quiz-header"><button className="back-link" onClick={() => { if (testMode || window.confirm('לצאת מהתרגול? הנקודות שכבר צברת יישמרו, אבל הסבב לא ייחשב כהושלם.')) onExit(); }}><ArrowRight size={18}/> יציאה מהתרגול</button><div className="quiz-header-badge">{mode === 'rocket' ? '🚀' : mode === 'tower' ? '🏗️' : mode === 'treasure' ? '🗝️' : '🎯'} {exerciseStageTitle[mode]}</div></div>
     <div className="quiz-top-meta"><div className="quiz-stage-label"><span>שאלה {idx + 1} מתוך {questions.length}</span><b>⭐ +{earnedPoints}</b></div><Progress value={idx / questions.length * 100}/></div>
     {(mode === 'rocket' || mode === 'tower' || mode === 'treasure') && <div className={`play-track ${mode}`}>
       <div className="play-track-caption"><b>{mode === 'rocket' ? 'בדרך לכוכב הבא 🌍' : mode === 'tower' ? 'בונים מגדל ביחד 🧱' : 'מפת האוצר שלנו 🗺️'}</b><span>{idx} / {questions.length}</span></div>
